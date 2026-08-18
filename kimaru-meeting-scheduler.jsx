@@ -214,6 +214,23 @@ function rememberPastNames(names) {
   return savePastNames([...loadPastNames(), ...names]);
 }
 
+const HOSTED_KEY = "kimaru_hosted_ids_v1";
+function loadHostedIds() {
+  try { return JSON.parse(localStorage.getItem(HOSTED_KEY) || "[]"); } catch { return []; }
+}
+function markHosted(id) {
+  const ids = loadHostedIds();
+  if (!ids.includes(id)) localStorage.setItem(HOSTED_KEY, JSON.stringify([id, ...ids]));
+}
+function isHosted(id) {
+  return loadHostedIds().includes(id);
+}
+
+function inviteUrlFor(id) {
+  if (typeof window === "undefined") return `?m=${id}`;
+  return `${window.location.origin}${window.location.pathname}?m=${id}`;
+}
+
 /* 集計 */
 function tally(m, c) {
   const res = Object.values(m.responses || {});
@@ -443,24 +460,23 @@ export default function App() {
           <NewMeeting
             pastNames={loadPastNames()}
             allMeetings={meetings}
+            say={say}
             onCancel={goHome}
             onCreate={async (m) => {
-              try {
-                rememberPastNames(m.participants.map((p) => p.name));
-                await upsertMeeting(m);
-                putMeeting(m);
-                say("調整リンクを発行しました");
-                openMeeting(m.id, "respond");
-              } catch (e) {
-                console.error(e);
-                say("作成に失敗しました");
-              }
+              rememberPastNames(m.participants.map((p) => p.name));
+              await upsertMeeting(m);
+              putMeeting(m);
+              markHosted(m.id);
+              say("調整リンクを発行しました");
+              return m;
             }}
+            onOpenMeeting={(id) => openMeeting(id, "respond")}
             base={view.copyFrom ? meetings.find((x) => x.id === view.copyFrom) : null} />
         )}
         {view.name === "meeting" && current && (
           <MeetingView m={current} me={me} setMe={saveMe} say={say}
-            tab={["respond", "result", "fix", "setting"].includes(view.tab) ? view.tab : "respond"}
+            isHost={isHosted(current.id)}
+            tab={["respond", "result", "setting"].includes(view.tab) ? view.tab : "respond"}
             setTab={(t) => setView({ ...view, tab: t })}
             onBack={goHome}
             others={meetings.filter((x) => x.id !== current.id)}
@@ -576,7 +592,7 @@ function MeetingCard({ m, onOpen }) {
 }
 
 /* ---------------- new meeting ---------------- */
-function NewMeeting({ onCancel, onCreate, pastNames, allMeetings, base }) {
+function NewMeeting({ onCancel, onCreate, onOpenMeeting, pastNames, allMeetings, base, say }) {
   const [roster, setRoster] = useState(() => {
     const stored = [...(pastNames || [])];
     if (stored.length) return [...new Set(stored)].filter(Boolean).sort();
@@ -589,10 +605,12 @@ function NewMeeting({ onCancel, onCreate, pastNames, allMeetings, base }) {
   const [names, setNames] = useState(base ? base.participants.map((p) => ({ ...p })) : []);
   const [nameInput, setNameInput] = useState("");
   const [dates, setDates] = useState([]);
-  const [slots, setSlots] = useState([]);
+  const [slot, setSlot] = useState("");
   const [dur, setDur] = useState(60);
   const [cands, setCands] = useState(base ? base.candidates.map((c) => ({ ...c, id: uid() })) : []);
   const [err, setErr] = useState("");
+  const [issued, setIssued] = useState(null);
+  const [busy, setBusy] = useState(false);
 
   const togglePast = (n) => {
     if (names.some((p) => p.name === n)) setNames(names.filter((p) => p.name !== n));
@@ -612,23 +630,58 @@ function NewMeeting({ onCancel, onCreate, pastNames, allMeetings, base }) {
     setNameInput("");
   };
   const genCands = () => {
-    if (!dates.length || !slots.length) { setErr("日付と開始時刻をどちらも選んでください。"); return; }
+    if (!dates.length || !slot) { setErr("日付と開始時刻をどちらも選んでください。"); return; }
     const made = [];
-    dates.forEach((d) => slots.forEach((s) => {
-      if (!cands.some((c) => c.date === d && c.start === s)) made.push({ id: uid(), date: d, start: s, end: addMin(s, dur) });
-    }));
+    dates.forEach((d) => {
+      if (!cands.some((c) => c.date === d && c.start === slot)) made.push({ id: uid(), date: d, start: slot, end: addMin(slot, dur) });
+    });
     setCands([...cands, ...made].sort(sortCands)); setErr(""); setDates([]);
   };
 
-  const submit = () => {
+  const submit = async () => {
     if (!title.trim()) { setErr("会議名を入れてください。"); return; }
     if (!cands.length) { setErr("候補日時を1つ以上つくってください。"); return; }
-    onCreate({
-      id: uid(), title: title.trim(), purpose: purpose.trim(), organizer: "",
-      deadline: "", participants: names, candidates: [...cands].sort(sortCands),
-      responses: {}, decided: null, meetingUrl: "", createdAt: Date.now(),
-    });
+    setBusy(true); setErr("");
+    try {
+      const m = {
+        id: uid(), title: title.trim(), purpose: purpose.trim(), organizer: "",
+        deadline: "", participants: names, candidates: [...cands].sort(sortCands),
+        responses: {}, decided: null, meetingUrl: "", createdAt: Date.now(),
+      };
+      await onCreate(m);
+      setIssued({ id: m.id, title: m.title });
+    } catch (e) {
+      console.error(e);
+      setErr("発行に失敗しました。もう一度お試しください。");
+    } finally {
+      setBusy(false);
+    }
   };
+
+  if (issued) {
+    const url = inviteUrlFor(issued.id);
+    const copy = async () => {
+      try {
+        await navigator.clipboard.writeText(url);
+        say?.("調整リンクをコピーしました。参加者に手動で送ってください");
+      } catch { say?.("コピーできませんでした"); }
+    };
+    return (
+      <div className="py-7">
+        <h1 style={{ fontSize: 24 }} className="mb-2">調整リンクを発行しました</h1>
+        <p className="muted text-sm mb-5">このリンクを参加者へ手動で送付してください。</p>
+        <div className="card p-5 mb-4" style={{ borderColor: "var(--acc)", background: "var(--accbg)" }}>
+          <div className="font-bold mb-2">{issued.title}</div>
+          <code className="mono text-xs block mb-3" style={{ wordBreak: "break-all" }}>{url}</code>
+          <button className="btn btn-primary" onClick={copy}><Copy size={15} />調整リンクをコピー</button>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button className="btn btn-ghost" onClick={() => onOpenMeeting(issued.id)}>会議ボードを開く</button>
+          <button className="btn btn-quiet" onClick={onCancel}>一覧へ戻る</button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="py-7">
@@ -701,11 +754,11 @@ function NewMeeting({ onCancel, onCreate, pastNames, allMeetings, base }) {
             <MiniCalendar selected={dates} onToggle={(s) => setDates(dates.includes(s) ? dates.filter((x) => x !== s) : [...dates, s].sort())} />
           </div>
           <div>
-            <label className="fld">開始時刻を選ぶ（複数可）</label>
+            <label className="fld">開始時刻を選ぶ（1つ）</label>
             <div className="flex flex-wrap gap-1.5 mb-4">
               {SLOTS.map((s) => (
-                <button key={s} type="button" className={`chipbtn ${slots.includes(s) ? "on" : ""}`}
-                  onClick={() => setSlots(slots.includes(s) ? slots.filter((x) => x !== s) : [...slots, s].sort())}>{s}</button>
+                <button key={s} type="button" className={`chipbtn ${slot === s ? "on" : ""}`}
+                  onClick={() => setSlot(slot === s ? "" : s)}>{s}</button>
               ))}
             </div>
             <Field label="所要時間">
@@ -714,7 +767,7 @@ function NewMeeting({ onCancel, onCreate, pastNames, allMeetings, base }) {
               </select>
             </Field>
             <button className="btn btn-primary w-full mt-4" onClick={genCands}>
-              <Plus size={15} />{dates.length && slots.length ? `${dates.length * slots.length}件の候補をつくる` : "候補をつくる"}
+              <Plus size={15} />{dates.length && slot ? `${dates.length}件の候補をつくる` : "候補をつくる"}
             </button>
           </div>
         </div>
@@ -738,27 +791,22 @@ function NewMeeting({ onCancel, onCreate, pastNames, allMeetings, base }) {
 
       {err && <div className="card p-3 mb-4 text-sm font-bold" style={{ borderColor: "var(--ng)", color: "var(--ng)", background: "var(--ngbg)" }}>{err}</div>}
       <div className="flex flex-wrap gap-2 items-center">
-        <button className="btn btn-primary" onClick={submit}><Link2 size={15} />この内容で調整リンクを発行する</button>
+        <button className="btn btn-primary" onClick={submit} disabled={busy}>
+          {busy ? <Loader2 size={15} className="animate-spin" /> : <Link2 size={15} />}
+          この内容で調整リンクを発行する
+        </button>
         <button className="btn btn-ghost" onClick={onCancel}>やめる</button>
       </div>
-      <p className="text-xs muted mt-3">発行後、表示されるリンクを参加者へ手動で送付してください。</p>
+      <p className="text-xs muted mt-3">発行後にリンクが表示されます。参加者へ手動で送付してください。</p>
     </div>
   );
 }
 
 /* ---------------- meeting view ---------------- */
-function MeetingView({ m, me, setMe, tab, setTab, onBack, mutate, onDelete, onCopy, say, others }) {
+function MeetingView({ m, me, setMe, tab, setTab, onBack, mutate, onDelete, onCopy, say, others, isHost }) {
   const dec = m.decided ? m.candidates.find((c) => c.id === m.decided.candidateId) : null;
-  const inviteUrl = typeof window !== "undefined"
-    ? `${window.location.origin}${window.location.pathname}?m=${m.id}`
-    : `?m=${m.id}`;
-
-  const copyInvite = async () => {
-    try {
-      await navigator.clipboard.writeText(inviteUrl);
-      say("調整リンクをコピーしました。参加者に手動で送ってください");
-    } catch { say("コピーできませんでした"); }
-  };
+  const hostTabs = [["respond", "回答"], ["result", "集計・確定"], ["setting", "設定"]];
+  const safeTab = isHost ? (hostTabs.some(([k]) => k === tab) ? tab : "respond") : "respond";
 
   return (
     <div className="py-7">
@@ -770,20 +818,9 @@ function MeetingView({ m, me, setMe, tab, setTab, onBack, mutate, onDelete, onCo
             参加予定 {m.participants.length}名 ・ 回答 {Object.keys(m.responses || {}).length}名
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <button className="btn btn-ghost btn-sm" onClick={copyInvite}><Link2 size={14} />調整リンクをコピー</button>
-          <span className={m.decided ? "pill pill-fixed" : "pill pill-open"}>{m.decided ? "日程確定" : "回答受付中"}</span>
-        </div>
+        <span className={m.decided ? "pill pill-fixed" : "pill pill-open"}>{m.decided ? "日程確定" : "回答受付中"}</span>
       </div>
       {m.purpose && <p className="muted mt-3 text-sm" style={{ maxWidth: 640 }}>{m.purpose}</p>}
-
-      <div className="card p-4 mt-4" style={{ borderColor: "var(--acc)", background: "var(--accbg)" }}>
-        <div className="fld" style={{ color: "var(--acc)", marginBottom: 6 }}>調整リンクを参加者に送付（手動）</div>
-        <div className="flex flex-wrap gap-2 items-center">
-          <code className="mono text-xs" style={{ flex: 1, minWidth: 200, wordBreak: "break-all" }}>{inviteUrl}</code>
-          <button className="btn btn-primary btn-sm" onClick={copyInvite}><Copy size={13} />コピー</button>
-        </div>
-      </div>
 
       {dec && (
         <div className="card p-4 mt-4" style={{ borderColor: "var(--ok)", background: "var(--okbg)" }}>
@@ -792,16 +829,18 @@ function MeetingView({ m, me, setMe, tab, setTab, onBack, mutate, onDelete, onCo
         </div>
       )}
 
-      <div className="flex gap-5 mt-5 mb-5" style={{ borderBottom: "1px solid var(--line)" }}>
-        {[["respond", "回答"], ["result", "集計"], ["fix", "確定"], ["setting", "設定"]].map(([k, label]) => (
-          <button key={k} className={`tab ${tab === k ? "on" : ""}`} onClick={() => setTab(k)}>{label}</button>
-        ))}
-      </div>
+      {isHost && (
+        <div className="flex gap-5 mt-5 mb-5" style={{ borderBottom: "1px solid var(--line)" }}>
+          {hostTabs.map(([k, label]) => (
+            <button key={k} className={`tab ${safeTab === k ? "on" : ""}`} onClick={() => setTab(k)}>{label}</button>
+          ))}
+        </div>
+      )}
+      {!isHost && <div className="mt-5 mb-5" />}
 
-      {tab === "respond" && <Respond m={m} me={me} setMe={setMe} mutate={mutate} say={say} />}
-      {tab === "result" && <Result m={m} mutate={mutate} />}
-      {tab === "fix" && <FixAndShare m={m} mutate={mutate} say={say} others={others} />}
-      {tab === "setting" && <Setting m={m} mutate={mutate} onDelete={onDelete} onCopy={onCopy} />}
+      {safeTab === "respond" && <Respond m={m} me={me} setMe={setMe} mutate={mutate} say={say} />}
+      {isHost && safeTab === "result" && <Result m={m} mutate={mutate} say={say} others={others} />}
+      {isHost && safeTab === "setting" && <Setting m={m} mutate={mutate} onDelete={onDelete} onCopy={onCopy} />}
     </div>
   );
 }
@@ -958,9 +997,10 @@ function Respond({ m, me, setMe, mutate, say }) {
   );
 }
 
-/* ---------------- 集計 ---------------- */
-function Result({ m, mutate }) {
+/* ---------------- 集計・確定 ---------------- */
+function Result({ m, mutate, say, others }) {
   const [order, setOrder] = useState("score");
+  const [pick, setPick] = useState(m.decided?.candidateId || bestOf(m)?.c.id || "");
   const responders = Object.values(m.responses || {}).sort((a, b) => a.updatedAt - b.updatedAt);
   const rows = useMemo(() => {
     const list = m.candidates.map((c) => ({ c, t: tally(m, c) }));
@@ -972,6 +1012,29 @@ function Result({ m, mutate }) {
   const pendingProps = proposals.filter((p) => !m.candidates.some((c) => c.date === p.date && c.start === p.start && c.end === p.end));
   const pendingUnique = new Set(pendingProps.map((p) => `${p.date}|${p.start}|${p.end}`)).size;
   const weak = best && (best.t.blocked.length > 0 || best.t.ok < Math.ceil((best.t.total || 1) * 0.5));
+  const cand = m.candidates.find((c) => c.id === pick) || best?.c || null;
+  const text = cand ? announceText(m, cand) : "";
+
+  useEffect(() => {
+    if (m.decided?.candidateId) setPick(m.decided.candidateId);
+    else if (best?.c?.id && !pick) setPick(best.c.id);
+  }, [m.decided?.candidateId, best?.c?.id]); // eslint-disable-line
+
+  const overlap = useMemo(() => {
+    if (!cand) return [];
+    return others.filter((o) => {
+      if (!o.decided) return false;
+      const c = o.candidates.find((x) => x.id === o.decided.candidateId);
+      if (!c || c.date !== cand.date) return false;
+      const shared = o.participants.some((p) => m.participants.some((q) => q.name === p.name));
+      return shared && mins(cand.start) < mins(c.end) && mins(c.start) < mins(cand.end);
+    }).map((o) => o.title);
+  }, [pick, others, m, cand]); // eslint-disable-line
+
+  const copyText = async () => {
+    try { await navigator.clipboard.writeText(text); say("確定連絡文をコピーしました"); }
+    catch { say("コピーできませんでした"); }
+  };
 
   if (!m.candidates.length) return <div className="card p-8 text-center muted">候補日時がありません。設定タブで追加してください。</div>;
 
@@ -1105,40 +1168,7 @@ function Result({ m, mutate }) {
           </div>
         </div>
       )}
-    </div>
-  );
-}
 
-/* ---------------- 確定 ---------------- */
-function FixAndShare({ m, mutate, say, others }) {
-  const [pick, setPick] = useState(m.decided?.candidateId || bestOf(m)?.c.id || "");
-  const cand = m.candidates.find((c) => c.id === pick) || bestOf(m)?.c || null;
-  const text = cand ? announceText(m, cand) : "";
-
-  useEffect(() => {
-    if (m.decided?.candidateId) setPick(m.decided.candidateId);
-  }, [m.decided?.candidateId]);
-
-  const overlap = useMemo(() => {
-    if (!cand) return [];
-    return others.filter((o) => {
-      if (!o.decided) return false;
-      const c = o.candidates.find((x) => x.id === o.decided.candidateId);
-      if (!c || c.date !== cand.date) return false;
-      const shared = o.participants.some((p) => m.participants.some((q) => q.name === p.name));
-      return shared && mins(cand.start) < mins(c.end) && mins(c.start) < mins(cand.end);
-    }).map((o) => o.title);
-  }, [pick, others, m, cand]); // eslint-disable-line
-
-  const copyText = async () => {
-    try { await navigator.clipboard.writeText(text); say("確定連絡文をコピーしました"); }
-    catch { say("コピーできませんでした"); }
-  };
-
-  if (!m.candidates.length) return <div className="card p-8 text-center muted">候補日時がありません。</div>;
-
-  return (
-    <div className="grid gap-4">
       <div className="card p-5">
         <div className="eyebrow mb-3">日時を選んで確定する</div>
         <div className="grid gap-1.5">
