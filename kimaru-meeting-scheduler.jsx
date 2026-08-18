@@ -1,0 +1,1234 @@
+import React, { useState, useEffect, useMemo, useCallback } from "react";
+import {
+  Calendar, Clock, Users, Plus, X, Check, Trash2, ChevronLeft, ChevronRight,
+  ArrowLeft, Copy, MessageSquare, AlertTriangle,
+  Star, Loader2, CircleDot, Send, Link2,
+} from "lucide-react";
+import {
+  ME_KEY,
+  isSupabaseConfigured,
+  bootstrapMeetings,
+  fetchMeeting,
+  upsertMeeting,
+  removeMeeting,
+  subscribeMeeting,
+} from "./src/api";
+
+/* ------------------------------------------------------------------ */
+/* tokens & styles                                                     */
+/* ------------------------------------------------------------------ */
+const CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@500;700;900&family=Noto+Sans+JP:wght@400;500;700&family=Roboto+Mono:wght@400;500;700&display=swap');
+
+.km {
+  --ink:#111A26; --ink2:#4A5B70; --ink3:#8494A8;
+  --paper:#E8EDF2; --card:#FFFFFF; --line:#CFD9E4; --line2:#E8EDF3;
+  --ok:#0E7C61; --okbg:#DFF0EA;
+  --mb:#A96F16; --mbbg:#F8EDD9;
+  --ng:#BC4B3B; --ngbg:#F8E4E0;
+  --acc:#2846D6; --accbg:#E4E8FC;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: 'Noto Sans JP', system-ui, sans-serif;
+  min-height: 100vh;
+  font-size: 14px;
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+}
+.km *, .km *::before, .km *::after { box-sizing: border-box; }
+.km h1,.km h2,.km h3 { font-family:'Zen Kaku Gothic New', sans-serif; font-weight:900; letter-spacing:.01em; line-height:1.3; margin:0; }
+.km .mono { font-family:'Roboto Mono', monospace; font-variant-numeric: tabular-nums; }
+.km .eyebrow { font-family:'Roboto Mono',monospace; font-size:10px; letter-spacing:.18em; text-transform:uppercase; color:var(--ink3); font-weight:500; }
+.km .muted { color:var(--ink2); }
+.km .card { background:var(--card); border:1px solid var(--line); border-radius:14px; }
+.km .divide { border-top:1px solid var(--line2); }
+
+.km button { font-family:inherit; }
+.km .btn { display:inline-flex; align-items:center; justify-content:center; gap:6px; border-radius:10px; padding:9px 14px; font-weight:700; font-size:13.5px; border:1px solid transparent; cursor:pointer; transition:transform .08s ease, background .15s ease, border-color .15s; white-space:nowrap; }
+.km .btn:active { transform:translateY(1px); }
+.km .btn:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+.km .btn-primary { background:var(--ink); color:#fff; }
+.km .btn-primary:hover { background:#243448; }
+.km .btn-ghost { background:#fff; border-color:var(--line); color:var(--ink); }
+.km .btn-ghost:hover { border-color:var(--ink3); }
+.km .btn-quiet { background:transparent; color:var(--ink2); padding:6px 8px; }
+.km .btn-quiet:hover { color:var(--ink); background:#fff; }
+.km .btn-sm { padding:6px 10px; font-size:12.5px; border-radius:8px; }
+.km .btn[disabled] { opacity:.4; cursor:not-allowed; }
+
+.km input[type=text], .km input[type=date], .km input[type=time], .km input[type=number], .km textarea, .km select {
+  font-family:inherit; font-size:14px; color:var(--ink); background:#fff;
+  border:1px solid var(--line); border-radius:10px; padding:9px 11px; width:100%;
+}
+.km input:focus, .km textarea:focus, .km select:focus { outline:2px solid var(--acc); outline-offset:-1px; border-color:var(--acc); }
+.km label.fld { display:block; font-size:12px; font-weight:700; color:var(--ink2); margin-bottom:5px; }
+
+.km .pill { display:inline-flex; align-items:center; gap:5px; border-radius:999px; padding:3px 10px; font-size:11.5px; font-weight:700; }
+.km .pill-open { background:var(--accbg); color:var(--acc); }
+.km .pill-fixed { background:var(--okbg); color:var(--ok); }
+.km .pill-warn { background:var(--mbbg); color:var(--mb); }
+
+/* ---- 出欠グリッド ---- */
+.km .grid-wrap { overflow-x:auto; border:1px solid var(--line); border-radius:14px; background:#fff; }
+.km table.grid { border-collapse:separate; border-spacing:0; width:100%; }
+.km table.grid th, .km table.grid td { border-bottom:1px solid var(--line2); padding:10px 12px; text-align:center; }
+.km table.grid thead th { position:sticky; top:0; background:#fff; z-index:3; font-size:11.5px; font-weight:700; color:var(--ink2); border-bottom:1px solid var(--line); }
+.km table.grid .cell-date { position:sticky; left:0; background:#fff; z-index:2; text-align:left; min-width:186px; border-right:1px solid var(--line); }
+.km table.grid thead .cell-date { z-index:4; }
+.km table.grid tbody tr:hover .cell-date, .km table.grid tbody tr:hover td { background:#FBFCFE; }
+.km tr.best .cell-date { background:#F3FAF7; box-shadow: inset 3px 0 0 var(--ok); }
+.km tr.best:hover .cell-date { background:#EDF7F3; }
+.km .name-v { writing-mode:vertical-rl; text-orientation:mixed; white-space:nowrap; max-height:96px; overflow:hidden; margin:0 auto; }
+
+/* ---- 合意バー（シグネチャー） ---- */
+.km .cbar { display:flex; height:7px; border-radius:4px; overflow:hidden; background:#EDF1F5; margin-top:7px; }
+.km .cbar i { display:block; height:100%; }
+.km .cbar .s-ok { background:var(--ok); }
+.km .cbar .s-mb { background:#E3B85A; }
+.km .cbar .s-ng { background:var(--ng); }
+.km .cbar .s-none { background:#DCE3EB; }
+
+.km .mark { display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px; border-radius:9px; font-weight:700; font-size:15px; }
+.km .m-ok { background:var(--okbg); color:var(--ok); }
+.km .m-mb { background:var(--mbbg); color:var(--mb); }
+.km .m-ng { background:var(--ngbg); color:var(--ng); }
+.km .m-na { background:#F1F4F8; color:#B6C1CE; }
+
+/* ---- 回答ボタン ---- */
+.km .ans { flex:1; border:1px solid var(--line); background:#fff; border-radius:10px; padding:9px 4px; font-weight:700; font-size:13px; color:var(--ink2); cursor:pointer; transition:.12s; }
+.km .ans:hover { border-color:var(--ink3); }
+.km .ans.on-ok { background:var(--ok); border-color:var(--ok); color:#fff; }
+.km .ans.on-mb { background:var(--mb); border-color:var(--mb); color:#fff; }
+.km .ans.on-ng { background:var(--ng); border-color:var(--ng); color:#fff; }
+.km .ans:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+
+/* ---- ミニカレンダー ---- */
+.km .cal { display:grid; grid-template-columns:repeat(7,1fr); gap:4px; }
+.km .cal button { aspect-ratio:1/1; border:1px solid transparent; background:transparent; border-radius:9px; font-family:'Roboto Mono',monospace; font-size:13px; color:var(--ink); cursor:pointer; }
+.km .cal button:hover:not([disabled]) { background:#EFF3F7; }
+.km .cal button.sel { background:var(--ink); color:#fff; font-weight:700; }
+.km .cal button[disabled] { color:#C4CEDA; cursor:default; }
+.km .cal .sat { color:#3F72B8; } .km .cal .sun { color:#B8564A; }
+.km .cal button.sel.sat, .km .cal button.sel.sun { color:#fff; }
+.km .caldow { display:grid; grid-template-columns:repeat(7,1fr); gap:4px; font-size:10.5px; text-align:center; color:var(--ink3); font-weight:700; margin-bottom:4px; }
+
+.km .chipbtn { border:1px solid var(--line); background:#fff; border-radius:999px; padding:5px 12px; font-size:12.5px; font-weight:700; color:var(--ink2); cursor:pointer; font-family:'Roboto Mono',monospace; }
+.km .chipbtn.on { background:var(--ink); color:#fff; border-color:var(--ink); }
+.km .chipbtn:hover { border-color:var(--ink3); }
+
+.km .tab { padding:11px 2px; font-weight:700; font-size:14px; color:var(--ink3); background:none; border:none; border-bottom:2px solid transparent; cursor:pointer; }
+.km .tab.on { color:var(--ink); border-bottom-color:var(--ink); }
+
+.km .toast { position:fixed; left:50%; transform:translateX(-50%); bottom:22px; background:var(--ink); color:#fff; padding:10px 18px; border-radius:999px; font-size:13px; font-weight:700; z-index:60; box-shadow:0 8px 24px rgba(17,26,38,.28); }
+.km .logo-grid { display:grid; grid-template-columns:repeat(3,6px); gap:2px; }
+.km .logo-grid i { width:6px; height:6px; border-radius:1.5px; background:#C3CEDA; display:block; }
+.km .logo-grid i.f { background:var(--ok); }
+.km a.link { color:var(--acc); text-decoration:none; font-weight:700; }
+.km a.link:hover { text-decoration:underline; }
+@media (prefers-reduced-motion: reduce) { .km * { transition:none !important; } }
+`;
+
+/* ------------------------------------------------------------------ */
+/* helpers                                                             */
+/* ------------------------------------------------------------------ */
+const WD = ["日", "月", "火", "水", "木", "金", "土"];
+const uid = () => Math.random().toString(36).slice(2, 10);
+const dObj = (s) => new Date(s + "T00:00:00");
+const fmtMD = (s) => { const d = dObj(s); return `${d.getMonth() + 1}/${d.getDate()}`; };
+const fmtFull = (s) => { const d = dObj(s); return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日(${WD[d.getDay()]})`; };
+const dow = (s) => WD[dObj(s).getDay()];
+const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const todayISO = () => iso(new Date());
+const candKey = (c) => `${c.date} ${c.start}`;
+const sortCands = (a, b) => (candKey(a) < candKey(b) ? -1 : 1);
+const mins = (t) => { const [h, m] = t.split(":").map(Number); return h * 60 + m; };
+const SLOTS = ["09:00", "10:00", "11:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00"];
+const addMin = (t, n) => { const v = mins(t) + n; return `${String(Math.floor(v / 60) % 24).padStart(2, "0")}:${String(v % 60).padStart(2, "0")}`; };
+/* 時間は30分単位のみ（1分単位の入力はさせない） */
+const TIME_OPTS = Array.from({ length: 48 }, (_, i) => {
+  const h = Math.floor(i / 2);
+  const m = i % 2 === 0 ? "00" : "30";
+  return `${String(h).padStart(2, "0")}:${m}`;
+});
+const snap30 = (t) => {
+  if (!t || !/^\d{1,2}:\d{2}$/.test(t)) return "10:00";
+  const [h, m] = t.split(":").map(Number);
+  if (m < 15) return `${String(h).padStart(2, "0")}:00`;
+  if (m < 45) return `${String(h).padStart(2, "0")}:30`;
+  return `${String((h + 1) % 24).padStart(2, "0")}:00`;
+};
+function TimeSelect({ value, onChange, style }) {
+  const v = snap30(value);
+  return (
+    <select value={v} onChange={(e) => onChange(e.target.value)} style={{ width: 110, ...style }} aria-label="時刻（30分単位）">
+      {TIME_OPTS.map((t) => <option key={t} value={t}>{t}</option>)}
+    </select>
+  );
+}
+/** 参加者提案を候補に載せ、提案者にはその枠を ○ で仮回答する */
+function absorbProposals(mm, items) {
+  const byKey = new Map();
+  items.forEach((p) => {
+    const start = snap30(p.start);
+    const end = snap30(p.end || addMin(start, 60));
+    const key = `${p.date}|${start}|${end}`;
+    if (!byKey.has(key)) byKey.set(key, { date: p.date, start, end, bys: [] });
+    if (p.by && !byKey.get(key).bys.includes(p.by)) byKey.get(key).bys.push(p.by);
+  });
+  let candidates = [...mm.candidates];
+  let responses = { ...mm.responses };
+  let added = 0;
+  byKey.forEach((g) => {
+    if (candidates.some((c) => c.date === g.date && c.start === g.start && c.end === g.end)) return;
+    const id = uid();
+    candidates.push({ id, date: g.date, start: g.start, end: g.end });
+    added++;
+    g.bys.forEach((name) => {
+      const prev = responses[name];
+      if (!prev) return;
+      responses[name] = { ...prev, answers: { ...prev.answers, [id]: "ok" } };
+    });
+  });
+  return { next: { ...mm, candidates: candidates.sort(sortCands), responses }, added };
+}
+
+const ME_LOCAL = ME_KEY;
+
+/* 集計 */
+function tally(m, c) {
+  const res = Object.values(m.responses || {});
+  let ok = 0, mb = 0, ng = 0;
+  const ngNames = [], mbNames = [], okNames = [];
+  res.forEach((r) => {
+    const a = r.answers?.[c.id];
+    if (a === "ok") { ok++; okNames.push(r.name); }
+    else if (a === "mb") { mb++; mbNames.push(r.name); }
+    else if (a === "ng") { ng++; ngNames.push(r.name); }
+  });
+  const total = m.participants.length || res.length || 1;
+  const required = m.participants.filter((p) => p.required).map((p) => p.name);
+  const blocked = required.filter((n) => ngNames.includes(n));
+  return { ok, mb, ng, none: Math.max(0, total - ok - mb - ng), total, okNames, mbNames, ngNames, blocked, score: ok * 2 + mb - (blocked.length ? 999 : 0) };
+}
+const bestOf = (m) => {
+  if (!m.candidates.length) return null;
+  return [...m.candidates].map((c) => ({ c, t: tally(m, c) })).sort((a, b) => b.t.score - a.t.score || (candKey(a.c) < candKey(b.c) ? -1 : 1))[0];
+};
+
+function announceText(m, c) {
+  return [
+    `【日程確定】${m.title}`,
+    `日時: ${fmtFull(c.date)} ${c.start}〜${c.end}`,
+    m.purpose ? `議題: ${m.purpose}` : "",
+    m.participants.length ? `参加: ${m.participants.map((p) => p.name).join("、")}` : "",
+  ].filter(Boolean).join("\n");
+}
+
+/* ------------------------------------------------------------------ */
+/* 小物                                                                */
+/* ------------------------------------------------------------------ */
+function ConsensusBar({ t }) {
+  const w = (n) => `${(n / Math.max(1, t.total)) * 100}%`;
+  return (
+    <div className="cbar" aria-hidden="true">
+      <i className="s-ok" style={{ width: w(t.ok) }} />
+      <i className="s-mb" style={{ width: w(t.mb) }} />
+      <i className="s-ng" style={{ width: w(t.ng) }} />
+      <i className="s-none" style={{ width: w(t.none) }} />
+    </div>
+  );
+}
+
+function MiniCalendar({ selected, onToggle }) {
+  const [cur, setCur] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
+  const first = new Date(cur.getFullYear(), cur.getMonth(), 1);
+  const start = new Date(first); start.setDate(1 - first.getDay());
+  const cells = Array.from({ length: 42 }, (_, i) => { const d = new Date(start); d.setDate(start.getDate() + i); return d; });
+  const t0 = todayISO();
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <button type="button" className="btn btn-quiet" onClick={() => setCur(new Date(cur.getFullYear(), cur.getMonth() - 1, 1))} aria-label="前の月"><ChevronLeft size={16} /></button>
+        <div className="mono font-bold text-sm">{cur.getFullYear()}.{String(cur.getMonth() + 1).padStart(2, "0")}</div>
+        <button type="button" className="btn btn-quiet" onClick={() => setCur(new Date(cur.getFullYear(), cur.getMonth() + 1, 1))} aria-label="次の月"><ChevronRight size={16} /></button>
+      </div>
+      <div className="caldow">{WD.map((w) => <div key={w}>{w}</div>)}</div>
+      <div className="cal">
+        {cells.map((d, i) => {
+          const s = iso(d);
+          const outside = d.getMonth() !== cur.getMonth();
+          const past = s < t0;
+          const cls = [d.getDay() === 6 ? "sat" : "", d.getDay() === 0 ? "sun" : "", selected.includes(s) ? "sel" : ""].join(" ");
+          return (
+            <button key={i} type="button" disabled={past || outside} className={cls}
+              style={{ opacity: outside ? 0 : 1, pointerEvents: outside ? "none" : "auto" }}
+              onClick={() => onToggle(s)} aria-pressed={selected.includes(s)}>
+              {d.getDate()}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, children, hint }) {
+  return (
+    <div>
+      <label className="fld">{label}</label>
+      {children}
+      {hint && <div className="text-xs muted mt-1">{hint}</div>}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* アプリ                                                              */
+/* ------------------------------------------------------------------ */
+export default function App() {
+  const [board, setBoard] = useState(null);
+  const [bootError, setBootError] = useState(null);
+  const [me, setMe] = useState("");
+  const [view, setView] = useState({ name: "home" });
+  const [toast, setToast] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const saved = localStorage.getItem(ME_LOCAL);
+        if (saved) setMe(JSON.parse(saved));
+      } catch { /* noop */ }
+
+      const mid = new URLSearchParams(window.location.search).get("m");
+      if (!isSupabaseConfigured) {
+        setBoard({ meetings: [] });
+        setBootError("not_configured");
+        if (mid) setView({ name: "meeting", id: mid, tab: "board" });
+        return;
+      }
+
+      try {
+        const { meetings, error } = await bootstrapMeetings(mid);
+        setBoard({ meetings });
+        setBootError(error);
+        if (mid) setView({ name: "meeting", id: mid, tab: "board" });
+      } catch (e) {
+        console.error(e);
+        setBoard({ meetings: [] });
+        setBootError(e.message || "load_failed");
+      }
+    })();
+  }, []);
+
+  const say = useCallback((t) => { setToast(t); setTimeout(() => setToast(""), 2200); }, []);
+  const saveMe = (n) => {
+    setMe(n);
+    try { localStorage.setItem(ME_LOCAL, JSON.stringify(n)); } catch { /* noop */ }
+  };
+
+  const putMeeting = useCallback((meeting) => {
+    setBoard((b) => {
+      const list = b?.meetings || [];
+      const i = list.findIndex((x) => x.id === meeting.id);
+      if (i < 0) return { meetings: [meeting, ...list] };
+      const next = [...list];
+      next[i] = meeting;
+      return { meetings: next };
+    });
+  }, []);
+
+  const mutate = useCallback(async (id, fn, msg) => {
+    try {
+      const latest = (await fetchMeeting(id)) || board?.meetings?.find((m) => m.id === id);
+      if (!latest) { say("会議が見つかりません"); return null; }
+      const updated = fn(latest);
+      await upsertMeeting(updated);
+      putMeeting(updated);
+      if (msg) say(msg);
+      return updated;
+    } catch (e) {
+      console.error(e);
+      say("保存に失敗しました");
+      return null;
+    }
+  }, [board, putMeeting, say]);
+
+  const openMeeting = (id, tab = "board") => {
+    const t = tab === "setting" ? "setting" : "board";
+    setView({ name: "meeting", id, tab: t });
+    const url = new URL(window.location.href);
+    url.searchParams.set("m", id);
+    window.history.replaceState({}, "", url);
+  };
+  const goHome = () => {
+    setView({ name: "home" });
+    const url = new URL(window.location.href);
+    url.searchParams.delete("m");
+    window.history.replaceState({}, "", url);
+  };
+
+  // 開いている会議をリアルタイム同期
+  useEffect(() => {
+    if (view.name !== "meeting" || !view.id || !isSupabaseConfigured) return undefined;
+    return subscribeMeeting(view.id, (payload) => putMeeting(payload));
+  }, [view.name, view.id, putMeeting]);
+
+  const meetings = board?.meetings || [];
+  const current = view.id ? meetings.find((m) => m.id === view.id) : null;
+
+  if (!board) {
+    return (
+      <div className="km flex items-center justify-center" style={{ minHeight: "100vh" }}>
+        <style>{CSS}</style>
+        <div className="muted flex items-center gap-2 text-sm"><Loader2 size={16} className="animate-spin" />読み込んでいます</div>
+      </div>
+    );
+  }
+
+  if (bootError === "not_configured") {
+    return (
+      <div className="km" style={{ minHeight: "100vh" }}>
+        <style>{CSS}</style>
+        <main className="mx-auto px-4 py-16" style={{ maxWidth: 560 }}>
+          <h1 style={{ fontSize: 28 }} className="mb-3">Supabase の接続が必要です</h1>
+          <p className="muted text-sm mb-5">招待リンクを他の人と共有するには、Supabase プロジェクトを接続してください。</p>
+          <ol className="grid gap-3 text-sm" style={{ paddingLeft: 18, lineHeight: 1.8 }}>
+            <li>Supabase でプロジェクトを作成</li>
+            <li><span className="mono">supabase/schema.sql</span> を SQL Editor で実行</li>
+            <li>Project Settings → API の URL と anon key をコピー</li>
+            <li>プロジェクト直下に <span className="mono">.env</span> を作り、<span className="mono">.env.example</span> を参考に貼る</li>
+            <li><span className="mono">npm run dev</span> を再起動</li>
+          </ol>
+        </main>
+      </div>
+    );
+  }
+
+  return (
+    <div className="km">
+      <style>{CSS}</style>
+      <Header me={me} onMe={saveMe} onHome={goHome} />
+      <main className="mx-auto px-4 pb-24" style={{ maxWidth: 1020 }}>
+        {bootError && bootError !== "not_configured" && (
+          <div className="card p-3 mb-4 text-sm" style={{ borderColor: "var(--ng)", color: "var(--ng)", background: "var(--ngbg)" }}>
+            データの読み込みに失敗しました: {String(bootError)}
+          </div>
+        )}
+        {view.name === "home" && (
+          <Home meetings={meetings} me={me}
+            onOpen={(id) => openMeeting(id)}
+            onNew={() => setView({ name: "new" })} />
+        )}
+        {view.name === "new" && (
+          <NewMeeting me={me}
+            onCancel={goHome}
+            onCreate={async (m) => {
+              try {
+                await upsertMeeting(m);
+                putMeeting(m);
+                say("会議をつくりました");
+                openMeeting(m.id);
+              } catch (e) {
+                console.error(e);
+                say("作成に失敗しました");
+              }
+            }}
+            base={view.copyFrom ? meetings.find((x) => x.id === view.copyFrom) : null} />
+        )}
+        {view.name === "meeting" && current && (
+          <MeetingView m={current} me={me} setMe={saveMe} say={say}
+            tab={view.tab === "setting" ? "setting" : "board"}
+            setTab={(t) => setView({ ...view, tab: t === "setting" ? "setting" : "board" })}
+            onBack={goHome}
+            others={meetings.filter((x) => x.id !== current.id)}
+            mutate={(fn, msg) => mutate(current.id, fn, msg)}
+            onCopy={() => setView({ name: "new", copyFrom: current.id })}
+            onDelete={async () => {
+              try {
+                await removeMeeting(current.id);
+                setBoard((b) => ({ meetings: (b?.meetings || []).filter((x) => x.id !== current.id) }));
+                say("会議を削除しました");
+                goHome();
+              } catch (e) {
+                console.error(e);
+                say("削除に失敗しました");
+              }
+            }} />
+        )}
+        {view.name === "meeting" && !current && (
+          <div className="muted py-16 text-center">
+            この会議は見つかりません。リンクが間違っているか、まだ作成されていない可能性があります。
+          </div>
+        )}
+      </main>
+      <footer className="mx-auto px-4 pb-10 text-xs muted" style={{ maxWidth: 1020 }}>
+        会議データは Supabase に保存されます。招待リンクを知っている人は同じボードを開けます。
+      </footer>
+      {toast && <div className="toast">{toast}</div>}
+    </div>
+  );
+}
+
+/* ---------------- header ---------------- */
+function Header({ me, onMe, onHome }) {
+  const [editing, setEditing] = useState(false);
+  const [tmp, setTmp] = useState(me);
+  useEffect(() => setTmp(me), [me]);
+  return (
+    <header className="sticky top-0 z-40" style={{ background: "rgba(232,237,242,.88)", backdropFilter: "blur(8px)", borderBottom: "1px solid var(--line)" }}>
+      <div className="mx-auto px-4 py-3 flex items-center gap-3" style={{ maxWidth: 1020 }}>
+        <button className="btn btn-quiet" onClick={onHome} style={{ padding: 0 }}>
+          <span className="flex items-center gap-2.5">
+            <span className="logo-grid"><i /><i className="f" /><i /><i /><i /><i className="f" /></span>
+            <span style={{ fontFamily: "'Zen Kaku Gothic New',sans-serif", fontWeight: 900, fontSize: 17, letterSpacing: ".02em", color: "var(--ink)" }}>キマル</span>
+          </span>
+        </button>
+        <span className="eyebrow hidden sm:inline">会議日程ボード</span>
+        <div className="ml-auto flex items-center gap-2">
+          {editing ? (
+            <div className="flex items-center gap-1.5">
+              <input type="text" value={tmp} onChange={(e) => setTmp(e.target.value)} placeholder="あなたの名前" style={{ width: 140, padding: "6px 10px" }}
+                onKeyDown={(e) => { if (e.key === "Enter") { onMe(tmp.trim()); setEditing(false); } }} autoFocus />
+              <button className="btn btn-primary btn-sm" onClick={() => { onMe(tmp.trim()); setEditing(false); }}>保存</button>
+            </div>
+          ) : (
+            <button className="btn btn-ghost btn-sm" onClick={() => setEditing(true)}>
+              <Users size={13} />{me ? me : "名前を設定"}
+            </button>
+          )}
+        </div>
+      </div>
+    </header>
+  );
+}
+
+/* ---------------- home ---------------- */
+function Home({ meetings, me, onOpen, onNew }) {
+  const mine = meetings.filter((m) => !m.decided && me && m.participants.some((p) => p.name === me) && !m.responses?.[me]);
+  return (
+    <div>
+      <section className="pt-10 pb-7">
+        <div className="eyebrow mb-2">Meeting scheduler</div>
+        <h1 style={{ fontSize: 30, letterSpacing: "-.01em" }}>会議の日程を、<br className="sm:hidden" />ひとつのボードで決めきる。</h1>
+        <p className="muted mt-3" style={{ maxWidth: 560 }}>
+          候補日時を並べて、参加者は ○ △ × を選ぶだけ。合意の濃さがバーで見えるので、どこで決まるかが一目でわかります。
+        </p>
+        <div className="flex flex-wrap gap-2 mt-5">
+          <button className="btn btn-primary" onClick={onNew}><Plus size={15} />会議をつくる</button>
+        </div>
+      </section>
+
+      {mine.length > 0 && (
+        <section className="card p-4 mb-5" style={{ borderColor: "var(--acc)", background: "var(--accbg)" }}>
+          <div className="flex items-center gap-2 mb-2" style={{ color: "var(--acc)" }}>
+            <Send size={15} /><span className="font-bold text-sm">あなたの回答待ちが {mine.length} 件あります</span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {mine.map((m) => (
+              <button key={m.id} className="btn btn-ghost btn-sm" onClick={() => onOpen(m.id, "respond")}>{m.title} に回答する</button>
+            ))}
+          </div>
+        </section>
+      )}
+
+      <div className="flex items-baseline justify-between mb-3">
+        <h2 style={{ fontSize: 15 }}>会議一覧</h2>
+        <span className="eyebrow">{meetings.length} meetings</span>
+      </div>
+
+      {meetings.length === 0 ? (
+        <div className="card p-10 text-center">
+          <Calendar size={26} style={{ color: "var(--ink3)", margin: "0 auto 10px" }} />
+          <div className="font-bold mb-1">まだ会議がありません</div>
+          <p className="muted text-sm mb-4">会議名と候補日時を入れるところから始めましょう。1分で作れます。</p>
+          <button className="btn btn-primary" onClick={onNew}><Plus size={15} />会議をつくる</button>
+        </div>
+      ) : (
+        <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill,minmax(300px,1fr))" }}>
+          {meetings.map((m) => <MeetingCard key={m.id} m={m} onOpen={onOpen} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MeetingCard({ m, onOpen }) {
+  const answered = Object.keys(m.responses || {}).length;
+  const total = m.participants.length;
+  const best = bestOf(m);
+  const dec = m.decided ? m.candidates.find((c) => c.id === m.decided.candidateId) : null;
+  return (
+    <button className="card p-4 text-left" style={{ cursor: "pointer" }} onClick={() => onOpen(m.id)}>
+      <div className="flex items-start justify-between gap-2 mb-2">
+        <h3 style={{ fontSize: 15.5 }}>{m.title}</h3>
+        <span className={m.decided ? "pill pill-fixed" : "pill pill-open"}>{m.decided ? "確定" : "回答受付中"}</span>
+      </div>
+      {m.purpose && <p className="muted text-xs mb-3" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{m.purpose}</p>}
+      {dec ? (
+        <div className="mono text-sm font-bold mb-2" style={{ color: "var(--ok)" }}>
+          {fmtMD(dec.date)}({dow(dec.date)}) {dec.start}–{dec.end}
+        </div>
+      ) : best ? (
+        <div className="mb-2">
+          <div className="mono text-sm font-bold">{fmtMD(best.c.date)}({dow(best.c.date)}) {best.c.start}–{best.c.end} <span className="muted" style={{ fontWeight: 500 }}>が最有力</span></div>
+          <ConsensusBar t={best.t} />
+        </div>
+      ) : <div className="muted text-xs mb-2">候補日時が未設定です</div>}
+      <div className="flex items-center gap-3 text-xs muted mono pt-2 divide" style={{ marginTop: 10, paddingTop: 8 }}>
+        <span className="flex items-center gap-1"><Users size={12} />{answered}/{total}</span>
+        <span className="flex items-center gap-1"><Calendar size={12} />{m.candidates.length}候補</span>
+        {m.deadline && <span className="flex items-center gap-1"><Clock size={12} />〆{fmtMD(m.deadline)}</span>}
+      </div>
+    </button>
+  );
+}
+
+/* ---------------- new meeting ---------------- */
+function NewMeeting({ onCancel, onCreate, me, base }) {
+  const [title, setTitle] = useState(base ? base.title + "（コピー）" : "");
+  const [purpose, setPurpose] = useState(base?.purpose || "");
+  const [organizer, setOrganizer] = useState(base?.organizer || me || "");
+  const [deadline, setDeadline] = useState("");
+  const [names, setNames] = useState(base ? base.participants.map((p) => ({ ...p })) : []);
+  const [nameInput, setNameInput] = useState("");
+  const [dates, setDates] = useState([]);
+  const [slots, setSlots] = useState([]);
+  const [dur, setDur] = useState(60);
+  const [cands, setCands] = useState(base ? base.candidates.map((c) => ({ ...c, id: uid() })) : []);
+  const [err, setErr] = useState("");
+
+  const addNames = () => {
+    const list = nameInput.split(/[、,\n\s]+/).map((s) => s.trim()).filter(Boolean);
+    if (!list.length) return;
+    setNames([...names, ...list.filter((n) => !names.some((p) => p.name === n)).map((n) => ({ id: uid(), name: n, required: false }))]);
+    setNameInput("");
+  };
+  const genCands = () => {
+    if (!dates.length || !slots.length) { setErr("日付と開始時刻をどちらも選んでください。"); return; }
+    const made = [];
+    dates.forEach((d) => slots.forEach((s) => {
+      if (!cands.some((c) => c.date === d && c.start === s)) made.push({ id: uid(), date: d, start: s, end: addMin(s, dur) });
+    }));
+    setCands([...cands, ...made].sort(sortCands)); setErr(""); setDates([]);
+  };
+
+  const submit = () => {
+    if (!title.trim()) { setErr("会議名を入れてください。"); return; }
+    if (!cands.length) { setErr("候補日時を1つ以上つくってください。"); return; }
+    onCreate({
+      id: uid(), title: title.trim(), purpose: purpose.trim(), organizer: organizer.trim() || "主催者",
+      deadline, participants: names, candidates: [...cands].sort(sortCands),
+      responses: {}, decided: null, meetingUrl: base?.meetingUrl || "", createdAt: Date.now(),
+    });
+  };
+
+  return (
+    <div className="py-7">
+      <button className="btn btn-quiet mb-3" onClick={onCancel}><ArrowLeft size={15} />会議一覧へ戻る</button>
+      <h1 style={{ fontSize: 24 }} className="mb-6">新しい会議をつくる</h1>
+
+      <div className="card p-5 mb-4">
+        <div className="eyebrow mb-4">01 — 会議の内容</div>
+        <div className="grid gap-4" style={{ gridTemplateColumns: "1fr" }}>
+          <Field label="会議名"><input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="例）Q3 販売戦略レビュー" /></Field>
+          <Field label="議題・目的" hint="参加者が準備できるように、決めたいことを書いておくと回答が早くなります。">
+            <textarea rows={3} value={purpose} onChange={(e) => setPurpose(e.target.value)} placeholder="例）新価格の適用時期と、営業への展開方法を決める" />
+          </Field>
+          <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))" }}>
+            <Field label="主催者"><input type="text" value={organizer} onChange={(e) => setOrganizer(e.target.value)} placeholder="あなたの名前" /></Field>
+            <Field label="回答の締切（任意）"><input type="date" value={deadline} onChange={(e) => setDeadline(e.target.value)} /></Field>
+          </div>
+        </div>
+      </div>
+
+      <div className="card p-5 mb-4">
+        <div className="eyebrow mb-4">02 — 参加予定者</div>
+        <div className="flex gap-2 mb-3">
+          <input type="text" value={nameInput} onChange={(e) => setNameInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addNames(); } }}
+            placeholder="名前を入力（カンマ・改行でまとめて追加できます）" />
+          <button className="btn btn-ghost" onClick={addNames}><Plus size={15} />追加</button>
+        </div>
+        {names.length === 0 ? <div className="muted text-xs">まだ誰も入っていません。あとから追加もできます。</div> : (
+          <div className="flex flex-wrap gap-2">
+            {names.map((p) => (
+              <span key={p.id} className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-bold"
+                style={{ background: p.required ? "var(--okbg)" : "#F1F4F8", color: p.required ? "var(--ok)" : "var(--ink2)", borderRadius: 999 }}>
+                <button title="必須参加者に切り替える" onClick={() => setNames(names.map((x) => x.id === p.id ? { ...x, required: !x.required } : x))}
+                  style={{ background: "none", border: "none", cursor: "pointer", padding: 0, color: "inherit", display: "flex" }}>
+                  <Star size={12} fill={p.required ? "currentColor" : "none"} />
+                </button>
+                {p.name}
+                <button onClick={() => setNames(names.filter((x) => x.id !== p.id))} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, color: "inherit", display: "flex" }} aria-label={`${p.name}を外す`}><X size={12} /></button>
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="text-xs muted mt-3">★ を押すと必須参加者になります。必須の人が × を出した候補は、集計で「要調整」として下げます。</div>
+      </div>
+
+      <div className="card p-5 mb-4">
+        <div className="eyebrow mb-4">03 — 候補日時</div>
+        <div className="grid gap-6" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))" }}>
+          <div>
+            <label className="fld">日付を選ぶ（複数可）</label>
+            <MiniCalendar selected={dates} onToggle={(s) => setDates(dates.includes(s) ? dates.filter((x) => x !== s) : [...dates, s].sort())} />
+          </div>
+          <div>
+            <label className="fld">開始時刻を選ぶ（複数可）</label>
+            <div className="flex flex-wrap gap-1.5 mb-4">
+              {SLOTS.map((s) => (
+                <button key={s} type="button" className={`chipbtn ${slots.includes(s) ? "on" : ""}`}
+                  onClick={() => setSlots(slots.includes(s) ? slots.filter((x) => x !== s) : [...slots, s].sort())}>{s}</button>
+              ))}
+            </div>
+            <Field label="所要時間">
+              <select value={dur} onChange={(e) => setDur(Number(e.target.value))}>
+                {[30, 45, 60, 90, 120].map((n) => <option key={n} value={n}>{n}分</option>)}
+              </select>
+            </Field>
+            <button className="btn btn-primary w-full mt-4" onClick={genCands}>
+              <Plus size={15} />{dates.length && slots.length ? `${dates.length * slots.length}件の候補をつくる` : "候補をつくる"}
+            </button>
+          </div>
+        </div>
+
+        {cands.length > 0 && (
+          <div className="mt-5 pt-4 divide">
+            <div className="flex items-center justify-between mb-2">
+              <span className="fld" style={{ margin: 0 }}>候補一覧（{cands.length}件）</span>
+              <button className="btn btn-quiet btn-sm" onClick={() => setCands([])}>すべて消す</button>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {cands.map((c) => (
+                <span key={c.id} className="mono flex items-center gap-2 px-2.5 py-1.5 text-xs" style={{ background: "#F1F4F8", borderRadius: 8 }}>
+                  {fmtMD(c.date)}({dow(c.date)}) {c.start}–{c.end}
+                  <button onClick={() => setCands(cands.filter((x) => x.id !== c.id))} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex", color: "var(--ink3)" }} aria-label="この候補を消す"><X size={12} /></button>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {err && <div className="card p-3 mb-4 text-sm font-bold" style={{ borderColor: "var(--ng)", color: "var(--ng)", background: "var(--ngbg)" }}>{err}</div>}
+      <div className="flex gap-2">
+        <button className="btn btn-primary" onClick={submit}>この内容で会議をつくる</button>
+        <button className="btn btn-ghost" onClick={onCancel}>やめる</button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- meeting view ---------------- */
+function MeetingView({ m, me, setMe, tab, setTab, onBack, mutate, onDelete, onCopy, say, others }) {
+  const dec = m.decided ? m.candidates.find((c) => c.id === m.decided.candidateId) : null;
+  const inviteUrl = typeof window !== "undefined"
+    ? `${window.location.origin}${window.location.pathname}?m=${m.id}`
+    : `?m=${m.id}`;
+
+  const copyInvite = async () => {
+    try {
+      await navigator.clipboard.writeText(inviteUrl);
+      say("招待リンクをコピーしました。参加者に送ってください");
+    } catch { say("コピーできませんでした"); }
+  };
+
+  return (
+    <div className="py-7">
+      <button className="btn btn-quiet mb-3" onClick={onBack}><ArrowLeft size={15} />会議一覧へ戻る</button>
+      <div className="flex flex-wrap items-start gap-3 justify-between">
+        <div>
+          <h1 style={{ fontSize: 24 }}>{m.title}</h1>
+          <div className="muted text-xs mt-1 mono">
+            主催 {m.organizer} ・ 参加予定 {m.participants.length}名 ・ 回答 {Object.keys(m.responses || {}).length}名
+            {m.deadline ? ` ・ 締切 ${fmtMD(m.deadline)}` : ""}
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button className="btn btn-ghost btn-sm" onClick={copyInvite}><Link2 size={14} />招待リンクをコピー</button>
+          <span className={m.decided ? "pill pill-fixed" : "pill pill-open"}>{m.decided ? "日程確定" : "回答受付中"}</span>
+        </div>
+      </div>
+      {m.purpose && <p className="muted mt-3 text-sm" style={{ maxWidth: 640 }}>{m.purpose}</p>}
+
+      {dec && (
+        <div className="card p-4 mt-4" style={{ borderColor: "var(--ok)", background: "var(--okbg)" }}>
+          <div className="eyebrow" style={{ color: "var(--ok)" }}>Fixed</div>
+          <div className="mono font-bold mt-1" style={{ fontSize: 20, color: "var(--ok)" }}>{fmtFull(dec.date)} {dec.start}–{dec.end}</div>
+        </div>
+      )}
+
+      <div className="flex gap-5 mt-5 mb-5" style={{ borderBottom: "1px solid var(--line)" }}>
+        {[["board", "出欠・集計"], ["setting", "設定"]].map(([k, label]) => (
+          <button key={k} className={`tab ${tab === k ? "on" : ""}`} onClick={() => setTab(k)}>{label}</button>
+        ))}
+      </div>
+
+      {tab === "board" && (
+        <div className="grid gap-8">
+          <section>
+            <div className="eyebrow mb-3">出欠を入力</div>
+            <Respond m={m} me={me} setMe={setMe} mutate={mutate} say={say} others={others} />
+          </section>
+          <section>
+            <div className="eyebrow mb-3">集計・確定</div>
+            <Result m={m} mutate={mutate} say={say} others={others} />
+          </section>
+        </div>
+      )}
+      {tab === "setting" && <Setting m={m} mutate={mutate} onDelete={onDelete} onCopy={onCopy} />}
+    </div>
+  );
+}
+
+/* ---------------- 出欠入力 ---------------- */
+function Respond({ m, me, setMe, mutate, say, others }) {
+  const [who, setWho] = useState(me || "");
+  const [newName, setNewName] = useState("");
+  const existing = m.responses?.[who];
+  const [answers, setAnswers] = useState({});
+  const [comment, setComment] = useState("");
+  const [props, setProps] = useState([]);
+
+  useEffect(() => {
+    setAnswers(existing?.answers || {});
+    setComment(existing?.comment || "");
+    setProps(existing?.proposals || []);
+  }, [who, m.id]); // eslint-disable-line
+
+  const cands = [...m.candidates].sort(sortCands);
+  const done = cands.filter((c) => answers[c.id]).length;
+
+  /* 他会議との重複チェック */
+  const conflicts = useMemo(() => {
+    const map = {};
+    others.forEach((o) => {
+      if (!o.decided) return;
+      const c = o.candidates.find((x) => x.id === o.decided.candidateId);
+      if (!c) return;
+      if (!o.participants.some((p) => p.name === who)) return;
+      cands.forEach((cc) => {
+        if (cc.date === c.date && mins(cc.start) < mins(c.end) && mins(c.start) < mins(cc.end)) map[cc.id] = o.title;
+      });
+    });
+    return map;
+  }, [others, who, m.id]); // eslint-disable-line
+
+  const save = async () => {
+    if (!who) { say("名前を選んでください"); return; }
+    if (!Object.keys(answers).length) { say("1つ以上の候補に回答してください"); return; }
+    await mutate((mm) => ({
+      ...mm,
+      participants: mm.participants.some((p) => p.name === who) ? mm.participants : [...mm.participants, { id: uid(), name: who, required: false }],
+      responses: { ...mm.responses, [who]: { name: who, answers, comment: comment.trim(), proposals: props.filter((p) => p.date && p.start).map((p) => ({ date: p.date, start: snap30(p.start), end: snap30(p.end || addMin(p.start, 60)) })), updatedAt: Date.now() } },
+    }), "回答を保存しました");
+    if (!me) setMe(who);
+  };
+
+  const setAll = (v) => { const a = {}; cands.forEach((c) => { a[c.id] = v; }); setAnswers(a); };
+
+  return (
+    <div className="grid gap-4">
+      <div className="card p-4">
+        <label className="fld">あなたの名前</label>
+        <div className="flex flex-wrap gap-2">
+          {m.participants.map((p) => (
+            <button key={p.id} className={`chipbtn ${who === p.name ? "on" : ""}`} style={{ fontFamily: "'Noto Sans JP',sans-serif" }} onClick={() => setWho(p.name)}>
+              {p.name}{m.responses?.[p.name] ? " ✓" : ""}
+            </button>
+          ))}
+          <span className="flex gap-1.5">
+            <input type="text" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="リストにない場合" style={{ width: 150, padding: "5px 10px", borderRadius: 999 }}
+              onKeyDown={(e) => { if (e.key === "Enter" && newName.trim()) { setWho(newName.trim()); setNewName(""); } }} />
+            <button className="btn btn-ghost btn-sm" onClick={() => { if (newName.trim()) { setWho(newName.trim()); setNewName(""); } }}>この名前で回答</button>
+          </span>
+        </div>
+        {who && <div className="text-xs mt-3 mono muted">回答者: <b style={{ color: "var(--ink)" }}>{who}</b>{existing ? " ・ 保存済みの回答を編集しています" : ""}</div>}
+      </div>
+
+      {who && (
+        <>
+          <div className="card p-4">
+            <div className="flex items-center justify-between mb-3">
+              <span className="fld" style={{ margin: 0 }}>候補日時に回答（{done}/{cands.length}）</span>
+              <span className="flex gap-1">
+                <button className="btn btn-quiet btn-sm" onClick={() => setAll("ok")}>全部 ○</button>
+                <button className="btn btn-quiet btn-sm" onClick={() => setAll("ng")}>全部 ×</button>
+              </span>
+            </div>
+            <div className="grid gap-2">
+              {cands.map((c) => (
+                <div key={c.id} className="flex flex-wrap items-center gap-2 py-2" style={{ borderTop: "1px solid var(--line2)" }}>
+                  <div style={{ minWidth: 170 }}>
+                    <div className="mono text-sm font-bold">{fmtMD(c.date)}({dow(c.date)}) {c.start}–{c.end}</div>
+                    {conflicts[c.id] && (
+                      <div className="text-xs flex items-center gap-1" style={{ color: "var(--mb)" }}>
+                        <AlertTriangle size={11} />「{conflicts[c.id]}」と重なります
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex gap-1.5 flex-1" style={{ minWidth: 220 }}>
+                    {[["ok", "○ 参加"], ["mb", "△ 未定"], ["ng", "× 不可"]].map(([v, label]) => (
+                      <button key={v} className={`ans ${answers[c.id] === v ? "on-" + v : ""}`}
+                        onClick={() => setAnswers({ ...answers, [c.id]: v })} aria-pressed={answers[c.id] === v}>{label}</button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="card p-4">
+            <label className="fld">主催者候補が合わないとき — 自分が入れる日時を提案（任意・3件まで）</label>
+            <p className="text-xs muted mb-3" style={{ marginTop: -2 }}>提案した日時は主催者が候補に載せると、みんなで再集計できます。時刻は30分単位です。</p>
+            <div className="grid gap-2">
+              {props.map((p, i) => (
+                <div key={i} className="flex flex-wrap gap-2 items-center">
+                  <input type="date" value={p.date} min={todayISO()} style={{ width: 160 }} onChange={(e) => setProps(props.map((x, j) => j === i ? { ...x, date: e.target.value } : x))} />
+                  <TimeSelect value={p.start} onChange={(start) => setProps(props.map((x, j) => j === i ? { ...x, start, end: addMin(start, 60) } : x))} />
+                  <span className="muted">–</span>
+                  <TimeSelect value={p.end} onChange={(end) => setProps(props.map((x, j) => j === i ? { ...x, end } : x))} />
+                  <button className="btn btn-quiet btn-sm" onClick={() => setProps(props.filter((_, j) => j !== i))}><X size={13} /></button>
+                </div>
+              ))}
+              {props.length < 3 && (
+                <button className="btn btn-ghost btn-sm" style={{ alignSelf: "flex-start" }}
+                  onClick={() => setProps([...props, { date: "", start: "10:00", end: "11:00" }])}><Plus size={13} />調整可能な日時を足す</button>
+              )}
+            </div>
+          </div>
+
+          <div className="card p-4">
+            <label className="fld">コメント（任意）</label>
+            <textarea rows={2} value={comment} onChange={(e) => setComment(e.target.value)} placeholder="例）前半は別件があるので、後半なら確実です" />
+          </div>
+
+          <div className="flex gap-2">
+            <button className="btn btn-primary" onClick={save}><Check size={15} />回答を保存する</button>
+            {existing && <button className="btn btn-ghost" onClick={() => mutate((mm) => { const r = { ...mm.responses }; delete r[who]; return { ...mm, responses: r }; }, "回答を取り消しました")}>回答を取り消す</button>}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- 集計・確定 ---------------- */
+function Result({ m, mutate, say, others }) {
+  const [order, setOrder] = useState("score");
+  const [pick, setPick] = useState(m.decided?.candidateId || bestOf(m)?.c.id || "");
+  const responders = Object.values(m.responses || {}).sort((a, b) => a.updatedAt - b.updatedAt);
+  const rows = useMemo(() => {
+    const list = m.candidates.map((c) => ({ c, t: tally(m, c) }));
+    return order === "score" ? list.sort((a, b) => b.t.score - a.t.score || (candKey(a.c) < candKey(b.c) ? -1 : 1)) : list.sort((a, b) => (candKey(a.c) < candKey(b.c) ? -1 : 1));
+  }, [m, order]);
+  const best = rows.length ? [...rows].sort((a, b) => b.t.score - a.t.score)[0] : null;
+  const noAnswer = m.participants.filter((p) => !m.responses?.[p.name]);
+  const proposals = Object.values(m.responses || {}).flatMap((r) => (r.proposals || []).map((p) => ({ ...p, by: r.name, start: snap30(p.start), end: snap30(p.end || addMin(p.start, 60)) })));
+  const pendingProps = proposals.filter((p) => !m.candidates.some((c) => c.date === p.date && c.start === p.start && c.end === p.end));
+  const pendingUnique = new Set(pendingProps.map((p) => `${p.date}|${p.start}|${p.end}`)).size;
+  const weak = best && (best.t.blocked.length > 0 || best.t.ok < Math.ceil((best.t.total || 1) * 0.5));
+  const cand = m.candidates.find((c) => c.id === pick) || best?.c || null;
+  const text = cand ? announceText(m, cand) : "";
+
+  useEffect(() => {
+    if (m.decided?.candidateId) setPick(m.decided.candidateId);
+    else if (best?.c?.id && !pick) setPick(best.c.id);
+  }, [m.decided?.candidateId, best?.c?.id]); // eslint-disable-line
+
+  const overlap = useMemo(() => {
+    if (!cand) return [];
+    return others.filter((o) => {
+      if (!o.decided) return false;
+      const c = o.candidates.find((x) => x.id === o.decided.candidateId);
+      if (!c || c.date !== cand.date) return false;
+      const shared = o.participants.some((p) => m.participants.some((q) => q.name === p.name));
+      return shared && mins(cand.start) < mins(c.end) && mins(c.start) < mins(cand.end);
+    }).map((o) => o.title);
+  }, [pick, others, m, cand]); // eslint-disable-line
+
+  const copyText = async () => {
+    try { await navigator.clipboard.writeText(text); say("確定連絡文をコピーしました"); }
+    catch { say("コピーできませんでした"); }
+  };
+
+  if (!m.candidates.length) return <div className="card p-8 text-center muted">候補日時がありません。設定タブで追加してください。</div>;
+
+  return (
+    <div className="grid gap-4">
+      {best && (
+        <div className="card p-5">
+          <div className="flex flex-wrap items-center gap-4 justify-between">
+            <div>
+              <div className="eyebrow mb-1">{best.t.blocked.length ? "現時点の最有力（要調整）" : "現時点の最有力"}</div>
+              <div className="mono font-bold" style={{ fontSize: 22 }}>{fmtFull(best.c.date)} {best.c.start}–{best.c.end}</div>
+              <div className="text-sm mt-1">
+                <b style={{ color: "var(--ok)" }}>○ {best.t.ok}</b>
+                <span className="muted"> ・ △ {best.t.mb} ・ × {best.t.ng} ・ 未回答 {best.t.none}</span>
+              </div>
+              {best.t.blocked.length > 0 && (
+                <div className="text-xs mt-1 flex items-center gap-1" style={{ color: "var(--ng)" }}>
+                  <AlertTriangle size={12} />必須参加者（{best.t.blocked.join("、")}）が参加できません
+                </div>
+              )}
+            </div>
+            {!m.decided && (
+              <button className="btn btn-primary" onClick={() => {
+                setPick(best.c.id);
+                mutate((mm) => ({ ...mm, decided: { candidateId: best.c.id, at: Date.now() } }), "日程を確定しました");
+              }}>
+                <Check size={15} />この日時で確定する
+              </button>
+            )}
+          </div>
+          <div style={{ maxWidth: 420 }}><ConsensusBar t={best.t} /></div>
+        </div>
+      )}
+
+      {weak && !m.decided && (
+        <div className="card p-4" style={{ borderColor: "var(--mb)", background: "var(--mbbg)" }}>
+          <div className="flex items-start gap-2" style={{ color: "var(--mb)" }}>
+            <AlertTriangle size={16} style={{ marginTop: 2, flexShrink: 0 }} />
+            <div>
+              <div className="font-bold text-sm">主催者の候補だけでは決まりにくそうです</div>
+              <p className="text-xs mt-1" style={{ color: "var(--ink2)" }}>
+                上の出欠入力で代替日時を提案してもらい、下の「参加者からの追加候補」から候補に載せると再集計できます。
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="flex items-center justify-between">
+        <div className="flex gap-1">
+          <button className={`chipbtn ${order === "score" ? "on" : ""}`} style={{ fontFamily: "'Noto Sans JP',sans-serif" }} onClick={() => setOrder("score")}>出席が多い順</button>
+          <button className={`chipbtn ${order === "date" ? "on" : ""}`} style={{ fontFamily: "'Noto Sans JP',sans-serif" }} onClick={() => setOrder("date")}>日時順</button>
+        </div>
+        <span className="eyebrow">{responders.length} responses</span>
+      </div>
+
+      <div className="grid-wrap">
+        <table className="grid">
+          <thead>
+            <tr>
+              <th className="cell-date" style={{ textAlign: "left" }}>候補日時</th>
+              <th style={{ minWidth: 74 }}>○ / △ / ×</th>
+              {responders.map((r) => <th key={r.name} style={{ minWidth: 46 }}><span className="name-v">{r.name}</span></th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(({ c, t }) => {
+              const selected = pick === c.id;
+              return (
+                <tr key={c.id} className={best && c.id === best.c.id ? "best" : ""}>
+                  <td className="cell-date">
+                    <button type="button" onClick={() => setPick(c.id)}
+                      className="flex items-center gap-2 text-left w-full"
+                      style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "inherit" }}>
+                      <CircleDot size={14} style={{ color: selected ? "var(--ink)" : "var(--line)", flexShrink: 0 }} />
+                      <div>
+                        <div className="mono text-sm font-bold">{fmtMD(c.date)}({dow(c.date)}) {c.start}–{c.end}</div>
+                        <ConsensusBar t={t} />
+                        {t.blocked.length > 0 && <div className="text-xs mt-1" style={{ color: "var(--ng)" }}>要調整: {t.blocked.join("、")}</div>}
+                      </div>
+                    </button>
+                  </td>
+                  <td className="mono text-xs">
+                    <b style={{ color: "var(--ok)" }}>{t.ok}</b> / <span style={{ color: "var(--mb)" }}>{t.mb}</span> / <span style={{ color: "var(--ng)" }}>{t.ng}</span>
+                  </td>
+                  {responders.map((r) => {
+                    const a = r.answers?.[c.id];
+                    const cls = a === "ok" ? "m-ok" : a === "mb" ? "m-mb" : a === "ng" ? "m-ng" : "m-na";
+                    return <td key={r.name}><span className={`mark ${cls}`}>{a === "ok" ? "○" : a === "mb" ? "△" : a === "ng" ? "×" : "–"}</span></td>;
+                  })}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {overlap.length > 0 && cand && (
+        <div className="card p-3 text-sm flex items-start gap-2" style={{ background: "var(--mbbg)", color: "var(--mb)" }}>
+          <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 2 }} />
+          <span>選択中の時間は、同じメンバーがいる「{overlap.join("」「")}」と重なっています。</span>
+        </div>
+      )}
+
+      <div className="card p-5">
+        <div className="eyebrow mb-3">日程を確定する</div>
+        <div className="flex flex-wrap gap-2 items-center mb-3">
+          <button className="btn btn-primary" disabled={!cand}
+            onClick={() => mutate((mm) => ({ ...mm, decided: { candidateId: pick || cand.id, at: Date.now() } }), "日程を確定しました")}>
+            <Check size={15} />選択した日時で確定する
+          </button>
+          {m.decided && <button className="btn btn-ghost" onClick={() => mutate((mm) => ({ ...mm, decided: null }), "確定を取り消しました")}>確定を取り消す</button>}
+        </div>
+        {cand && (
+          <>
+            <div className="text-xs muted mb-2">選択中: <span className="mono font-bold" style={{ color: "var(--ink)" }}>{fmtFull(cand.date)} {cand.start}–{cand.end}</span></div>
+            <pre className="p-3 text-xs" style={{ background: "#F5F8FA", borderRadius: 10, whiteSpace: "pre-wrap", fontFamily: "'Noto Sans JP',sans-serif", lineHeight: 1.8 }}>
+              {text}
+            </pre>
+            <button className="btn btn-ghost mt-3" onClick={copyText}><Copy size={15} />確定連絡文をコピー</button>
+          </>
+        )}
+      </div>
+
+      {noAnswer.length > 0 && (
+        <div className="card p-4">
+          <div className="fld">未回答（{noAnswer.length}名）</div>
+          <div className="flex flex-wrap gap-1.5">
+            {noAnswer.map((p) => <span key={p.id} className="text-xs px-2.5 py-1" style={{ background: "#F1F4F8", borderRadius: 999, color: "var(--ink2)" }}>{p.name}{p.required ? " ★" : ""}</span>)}
+          </div>
+        </div>
+      )}
+
+      <div className="card p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+          <div className="fld" style={{ margin: 0 }}>参加者からの追加候補（{proposals.length}件）</div>
+          {pendingProps.length > 0 && (
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={() => mutate((mm) => absorbProposals(mm, pendingProps).next,
+                pendingUnique === 1
+                  ? "候補に追加しました。表で再集計できます"
+                  : `${pendingUnique}件を候補に追加しました。未回答の人に再回答を依頼してください`)}
+            >
+              <Plus size={13} />未追加をすべて候補にして再集計（{pendingUnique}）
+            </button>
+          )}
+        </div>
+        <p className="text-xs muted mb-3">候補に載せると上の集計表に行が増えます。提案者には自動で ○ が入ります。ほかの人は上の出欠で再回答してください。</p>
+        {proposals.length === 0 ? (
+          <div className="text-sm muted">まだ提案はありません。参加者に代替日時の提案を依頼すると、ここに集まります。</div>
+        ) : (
+          <div className="grid gap-2">
+            {proposals.map((p, i) => {
+              const dup = m.candidates.some((c) => c.date === p.date && c.start === p.start && c.end === p.end);
+              return (
+                <div key={i} className="flex flex-wrap items-center gap-2 justify-between py-1.5" style={{ borderTop: i ? "1px solid var(--line2)" : "none" }}>
+                  <span className="mono text-sm">{fmtMD(p.date)}({dow(p.date)}) {p.start}–{p.end} <span className="muted" style={{ fontFamily: "'Noto Sans JP',sans-serif" }}>／ {p.by} さん</span></span>
+                  <button className="btn btn-ghost btn-sm" disabled={dup}
+                    onClick={() => mutate((mm) => absorbProposals(mm, [p]).next, "候補に追加しました。表で再集計できます")}>
+                    {dup ? "追加済み" : <><Plus size={13} />候補に追加</>}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {responders.some((r) => r.comment) && (
+        <div className="card p-4">
+          <div className="fld flex items-center gap-1"><MessageSquare size={12} />コメント</div>
+          <div className="grid gap-3">
+            {responders.filter((r) => r.comment).map((r) => (
+              <div key={r.name} className="text-sm">
+                <div className="text-xs font-bold muted">{r.name}</div>
+                <div>{r.comment}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- 設定 ---------------- */
+function Setting({ m, mutate, onDelete, onCopy }) {
+  const [title, setTitle] = useState(m.title);
+  const [purpose, setPurpose] = useState(m.purpose);
+  const [deadline, setDeadline] = useState(m.deadline || "");
+  const [nameInput, setNameInput] = useState("");
+  const [nd, setNd] = useState(todayISO());
+  const [ns, setNs] = useState("10:00");
+  const [ne, setNe] = useState("11:00");
+  const [confirmDel, setConfirmDel] = useState(false);
+
+  return (
+    <div className="grid gap-4">
+      <div className="card p-5">
+        <div className="eyebrow mb-3">会議の内容</div>
+        <div className="grid gap-3">
+          <Field label="会議名"><input type="text" value={title} onChange={(e) => setTitle(e.target.value)} /></Field>
+          <Field label="議題・目的"><textarea rows={3} value={purpose} onChange={(e) => setPurpose(e.target.value)} /></Field>
+          <Field label="回答の締切"><input type="date" value={deadline} onChange={(e) => setDeadline(e.target.value)} /></Field>
+          <button className="btn btn-primary" style={{ justifySelf: "flex-start" }}
+            onClick={() => mutate((mm) => ({ ...mm, title: title.trim() || mm.title, purpose: purpose.trim(), deadline }), "内容を更新しました")}>変更を保存</button>
+        </div>
+      </div>
+
+      <div className="card p-5">
+        <div className="eyebrow mb-3">参加予定者</div>
+        <div className="flex flex-wrap gap-2 mb-3">
+          {m.participants.map((p) => (
+            <span key={p.id} className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-bold"
+              style={{ background: p.required ? "var(--okbg)" : "#F1F4F8", color: p.required ? "var(--ok)" : "var(--ink2)", borderRadius: 999 }}>
+              <button title="必須参加者に切り替える" style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "inherit", display: "flex" }}
+                onClick={() => mutate((mm) => ({ ...mm, participants: mm.participants.map((x) => x.id === p.id ? { ...x, required: !x.required } : x) }))}>
+                <Star size={12} fill={p.required ? "currentColor" : "none"} />
+              </button>
+              {p.name}
+              <button style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "inherit", display: "flex" }} aria-label={`${p.name}を外す`}
+                onClick={() => mutate((mm) => ({ ...mm, participants: mm.participants.filter((x) => x.id !== p.id) }), "参加者を外しました")}><X size={12} /></button>
+            </span>
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <input type="text" value={nameInput} onChange={(e) => setNameInput(e.target.value)} placeholder="名前を追加（カンマ区切り可）" />
+          <button className="btn btn-ghost" onClick={() => {
+            const list = nameInput.split(/[、,\n\s]+/).map((s) => s.trim()).filter(Boolean);
+            if (!list.length) return;
+            mutate((mm) => ({ ...mm, participants: [...mm.participants, ...list.filter((n) => !mm.participants.some((p) => p.name === n)).map((n) => ({ id: uid(), name: n, required: false }))] }), "参加者を追加しました");
+            setNameInput("");
+          }}><Plus size={15} />追加</button>
+        </div>
+      </div>
+
+      <div className="card p-5">
+        <div className="eyebrow mb-3">候補日時</div>
+        <div className="grid gap-1.5 mb-4">
+          {[...m.candidates].sort(sortCands).map((c) => (
+            <div key={c.id} className="flex items-center justify-between gap-2 py-1.5" style={{ borderBottom: "1px solid var(--line2)" }}>
+              <span className="mono text-sm">{fmtMD(c.date)}({dow(c.date)}) {c.start}–{c.end}</span>
+              <button className="btn btn-quiet btn-sm" aria-label="この候補を消す"
+                onClick={() => mutate((mm) => ({
+                  ...mm, candidates: mm.candidates.filter((x) => x.id !== c.id),
+                  decided: mm.decided?.candidateId === c.id ? null : mm.decided,
+                }), "候補を削除しました")}><Trash2 size={14} /></button>
+            </div>
+          ))}
+        </div>
+        <div className="flex flex-wrap gap-2 items-end">
+          <input type="date" value={nd} min={todayISO()} onChange={(e) => setNd(e.target.value)} style={{ width: 160 }} />
+          <TimeSelect value={ns} onChange={(v) => { setNs(v); setNe(addMin(v, 60)); }} />
+          <span className="muted">–</span>
+          <TimeSelect value={ne} onChange={setNe} />
+          <button className="btn btn-ghost" onClick={() => mutate((mm) => ({ ...mm, candidates: [...mm.candidates, { id: uid(), date: nd, start: snap30(ns), end: snap30(ne) }].sort(sortCands) }), "候補を追加しました")}>
+            <Plus size={15} />候補を追加
+          </button>
+        </div>
+      </div>
+
+      <div className="card p-5">
+        <div className="eyebrow mb-3">この会議を</div>
+        <div className="flex flex-wrap gap-2">
+          <button className="btn btn-ghost" onClick={onCopy}><Copy size={15} />同じ設定で複製する</button>
+          {confirmDel ? (
+            <span className="flex gap-2 items-center">
+              <span className="text-sm font-bold" style={{ color: "var(--ng)" }}>回答も消えます。削除しますか？</span>
+              <button className="btn btn-sm" style={{ background: "var(--ng)", color: "#fff" }} onClick={onDelete}>削除する</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => setConfirmDel(false)}>やめる</button>
+            </span>
+          ) : (
+            <button className="btn btn-ghost" style={{ color: "var(--ng)" }} onClick={() => setConfirmDel(true)}><Trash2 size={15} />削除する</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
