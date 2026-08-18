@@ -214,48 +214,24 @@ function rememberPastNames(names) {
   return savePastNames([...loadPastNames(), ...names]);
 }
 
-const HOSTED_KEY = "kimaru_hosted_ids_v1";
-const HOST_TOKENS_KEY = "kimaru_host_tokens_v1";
-
-function loadHostedIds() {
-  try { return JSON.parse(localStorage.getItem(HOSTED_KEY) || "[]"); } catch { return []; }
-}
-function markHosted(id) {
-  const ids = loadHostedIds();
-  if (!ids.includes(id)) localStorage.setItem(HOSTED_KEY, JSON.stringify([id, ...ids]));
-}
-function loadHostTokens() {
-  try { return JSON.parse(localStorage.getItem(HOST_TOKENS_KEY) || "{}"); } catch { return {}; }
-}
-function rememberHostToken(id, token) {
-  if (!id || !token) return;
-  const map = loadHostTokens();
-  map[id] = token;
-  localStorage.setItem(HOST_TOKENS_KEY, JSON.stringify(map));
-  markHosted(id);
-}
-function checkIsHost(m) {
-  if (!m?.id) return false;
-  try {
-    const urlHost = new URLSearchParams(window.location.search).get("host");
-    if (m.hostToken && urlHost && urlHost === m.hostToken) {
-      rememberHostToken(m.id, m.hostToken);
-      return true;
-    }
-  } catch { /* noop */ }
-  if (m.hostToken && loadHostTokens()[m.id] === m.hostToken) return true;
-  if (loadHostedIds().includes(m.id)) return true;
-  return false;
-}
-
-function inviteUrlFor(id, hostToken) {
-  if (typeof window === "undefined") return hostToken ? `?m=${id}&host=${hostToken}` : `?m=${id}`;
+function inviteUrlFor(id) {
+  if (typeof window === "undefined") return `?m=${id}`;
   const url = new URL(window.location.href);
   url.search = "";
   url.searchParams.set("m", id);
-  if (hostToken) url.searchParams.set("host", hostToken);
   return url.toString();
 }
+
+function coordinatorOf(m) {
+  return (m?.participants || []).find((p) => p.coordinator) || null;
+}
+function isCoordinatorName(m, name) {
+  if (!name) return false;
+  const c = coordinatorOf(m);
+  return Boolean(c && c.name === name);
+}
+
+/* 集計 */
 
 /* 集計 */
 function tally(m, c) {
@@ -421,9 +397,7 @@ export default function App() {
     setView({ name: "meeting", id, tab: t });
     const url = new URL(window.location.href);
     url.searchParams.set("m", id);
-    const hostTok = loadHostTokens()[id];
-    if (hostTok) url.searchParams.set("host", hostTok);
-    else url.searchParams.delete("host");
+    url.searchParams.delete("host");
     window.history.replaceState({}, "", url);
   };
   const goHome = () => {
@@ -496,8 +470,6 @@ export default function App() {
               rememberPastNames(m.participants.map((p) => p.name));
               await upsertMeeting(m);
               putMeeting(m);
-              if (m.hostToken) rememberHostToken(m.id, m.hostToken);
-              else markHosted(m.id);
               say("調整リンクを発行しました");
               return m;
             }}
@@ -632,7 +604,12 @@ function NewMeeting({ onCancel, onCreate, onOpenMeeting, pastNames, allMeetings,
 
   const [title, setTitle] = useState(base ? base.title + "（コピー）" : "");
   const [purpose, setPurpose] = useState(base?.purpose || "");
-  const [names, setNames] = useState(base ? base.participants.map((p) => ({ ...p })) : []);
+  const [names, setNames] = useState(() => {
+    if (!base?.participants?.length) return [];
+    const copied = base.participants.map((p) => ({ ...p, id: uid() }));
+    if (!copied.some((p) => p.coordinator)) copied[0].coordinator = true;
+    return copied;
+  });
   const [nameInput, setNameInput] = useState("");
   const [dates, setDates] = useState([]);
   const [slot, setSlot] = useState("");
@@ -644,20 +621,33 @@ function NewMeeting({ onCancel, onCreate, onOpenMeeting, pastNames, allMeetings,
 
   const togglePast = (n) => {
     if (names.some((p) => p.name === n)) setNames(names.filter((p) => p.name !== n));
-    else setNames([...names, { id: uid(), name: n, required: false }]);
+    else {
+      const next = [...names, { id: uid(), name: n, required: false, coordinator: names.length === 0 }];
+      setNames(next);
+    }
   };
   const removePast = (n, e) => {
     e.stopPropagation();
     const next = savePastNames(roster.filter((x) => x !== n));
     setRoster(next);
-    setNames((cur) => cur.filter((p) => p.name !== n));
+    setNames((cur) => {
+      const filtered = cur.filter((p) => p.name !== n);
+      if (filtered.length && !filtered.some((p) => p.coordinator)) filtered[0].coordinator = true;
+      return filtered;
+    });
   };
   const addNames = () => {
     const list = nameInput.split(/[、,\n\s]+/).map((s) => s.trim()).filter(Boolean);
     if (!list.length) return;
-    setNames([...names, ...list.filter((n) => !names.some((p) => p.name === n)).map((n) => ({ id: uid(), name: n, required: false }))]);
+    const fresh = list.filter((n) => !names.some((p) => p.name === n)).map((n, i) => ({
+      id: uid(), name: n, required: false, coordinator: names.length === 0 && i === 0,
+    }));
+    setNames([...names, ...fresh]);
     setRoster(savePastNames([...roster, ...list]));
     setNameInput("");
+  };
+  const setCoordinator = (id) => {
+    setNames(names.map((x) => ({ ...x, coordinator: x.id === id })));
   };
   const genCands = () => {
     if (!dates.length || !slot) { setErr("日付と開始時刻をどちらも選んでください。"); return; }
@@ -670,17 +660,19 @@ function NewMeeting({ onCancel, onCreate, onOpenMeeting, pastNames, allMeetings,
 
   const submit = async () => {
     if (!title.trim()) { setErr("会議名を入れてください。"); return; }
+    if (!names.length) { setErr("参加予定者を1人以上追加してください。"); return; }
+    if (!names.some((p) => p.coordinator)) { setErr("調整者を1人選んでください。"); return; }
     if (!cands.length) { setErr("候補日時を1つ以上つくってください。"); return; }
     setBusy(true); setErr("");
     try {
       const m = {
         id: uid(), title: title.trim(), purpose: purpose.trim(), organizer: "",
-        deadline: "", participants: names, candidates: [...cands].sort(sortCands),
+        deadline: "", participants: names.map((p) => ({ ...p, coordinator: Boolean(p.coordinator) })),
+        candidates: [...cands].sort(sortCands),
         responses: {}, decided: null, meetingUrl: "", createdAt: Date.now(),
-        hostToken: uid() + uid(),
       };
       await onCreate(m);
-      setIssued({ id: m.id, title: m.title, hostToken: m.hostToken });
+      setIssued({ id: m.id, title: m.title });
     } catch (e) {
       console.error(e);
       setErr("発行に失敗しました。もう一度お試しください。");
@@ -759,22 +751,35 @@ function NewMeeting({ onCancel, onCreate, onOpenMeeting, pastNames, allMeetings,
             placeholder="新しい名前を入力（カンマ・改行でまとめて追加できます）" />
           <button className="btn btn-ghost" onClick={addNames}><Plus size={15} />追加</button>
         </div>
-        {names.length === 0 ? <div className="muted text-xs">まだ誰も入っていません。あとから追加もできます。</div> : (
+        {names.length === 0 ? <div className="muted text-xs">まだ誰も入っていません。</div> : (
           <div className="flex flex-wrap gap-2">
             {names.map((p) => (
               <span key={p.id} className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-bold"
-                style={{ background: p.required ? "var(--okbg)" : "#F1F4F8", color: p.required ? "var(--ok)" : "var(--ink2)", borderRadius: 999 }}>
+                style={{
+                  background: p.coordinator ? "var(--accbg)" : p.required ? "var(--okbg)" : "#F1F4F8",
+                  color: p.coordinator ? "var(--acc)" : p.required ? "var(--ok)" : "var(--ink2)",
+                  borderRadius: 999,
+                  border: p.coordinator ? "1px solid var(--acc)" : "1px solid transparent",
+                }}>
+                <button title="調整者にする（1人だけ）" onClick={() => setCoordinator(p.id)}
+                  style={{ background: "none", border: "none", cursor: "pointer", padding: 0, color: "inherit", font: "inherit", fontWeight: 700 }}>
+                  {p.coordinator ? "調整者" : "調整者にする"}
+                </button>
+                <span>{p.name}</span>
                 <button title="必須参加者に切り替える" onClick={() => setNames(names.map((x) => x.id === p.id ? { ...x, required: !x.required } : x))}
                   style={{ background: "none", border: "none", cursor: "pointer", padding: 0, color: "inherit", display: "flex" }}>
                   <Star size={12} fill={p.required ? "currentColor" : "none"} />
                 </button>
-                {p.name}
-                <button onClick={() => setNames(names.filter((x) => x.id !== p.id))} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, color: "inherit", display: "flex" }} aria-label={`${p.name}を外す`}><X size={12} /></button>
+                <button onClick={() => {
+                  const filtered = names.filter((x) => x.id !== p.id);
+                  if (filtered.length && !filtered.some((x) => x.coordinator)) filtered[0] = { ...filtered[0], coordinator: true };
+                  setNames(filtered);
+                }} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, color: "inherit", display: "flex" }} aria-label={`${p.name}を外す`}><X size={12} /></button>
               </span>
             ))}
           </div>
         )}
-        <div className="text-xs muted mt-3">★ を押すと必須参加者になります。必須の人が × を出した候補は、集計で「要調整」として下げます。</div>
+        <div className="text-xs muted mt-3">「調整者にする」は1人だけ選べます。調整者は集計・確定と設定を操作できます。★ は必須参加者です。</div>
       </div>
 
       <div className="card p-5 mb-4">
@@ -835,37 +840,24 @@ function NewMeeting({ onCancel, onCreate, onOpenMeeting, pastNames, allMeetings,
 
 /* ---------------- meeting view ---------------- */
 function MeetingView({ m, me, setMe, tab, setTab, onBack, mutate, onDelete, onCopy, say, others }) {
-  const [host, setHost] = useState(() => checkIsHost(m));
-  const [claiming, setClaiming] = useState(false);
+  const [viewer, setViewer] = useState(me || "");
+  const host = isCoordinatorName(m, viewer);
   const dec = m.decided ? m.candidates.find((c) => c.id === m.decided.candidateId) : null;
   const hostTabs = [["respond", "回答"], ["result", "集計・確定"], ["setting", "設定"]];
   const safeTab = host ? (hostTabs.some(([k]) => k === tab) ? tab : "respond") : "respond";
+  const coord = coordinatorOf(m);
 
   useEffect(() => {
-    setHost(checkIsHost(m));
-  }, [m.id, m.hostToken]);
+    if (me && !viewer) setViewer(me);
+  }, [me]); // eslint-disable-line
 
-  const enableHostMenu = async () => {
-    if (checkIsHost(m)) { setHost(true); return; }
-    if (m.hostToken) {
-      say("この端末は主催者として登録されていません。発行したブラウザで開くか、新しい会議を発行してください。");
-      return;
-    }
-    setClaiming(true);
-    try {
-      const token = uid() + uid();
-      const updated = await mutate((mm) => ({ ...mm, hostToken: token }), "主催者メニューを表示しました");
-      if (updated) {
-        rememberHostToken(m.id, token);
-        setHost(true);
-        const url = new URL(window.location.href);
-        url.searchParams.set("host", token);
-        window.history.replaceState({}, "", url);
-        setTab("result");
-      }
-    } finally {
-      setClaiming(false);
-    }
+  useEffect(() => {
+    if (!host && tab !== "respond") setTab("respond");
+  }, [host, tab, setTab]);
+
+  const pickViewer = (name) => {
+    setViewer(name);
+    setMe(name);
   };
 
   return (
@@ -876,17 +868,10 @@ function MeetingView({ m, me, setMe, tab, setTab, onBack, mutate, onDelete, onCo
           <h1 style={{ fontSize: 24 }}>{m.title}</h1>
           <div className="muted text-xs mt-1 mono">
             参加予定 {m.participants.length}名 ・ 回答 {Object.keys(m.responses || {}).length}名
+            {coord ? ` ・ 調整者 ${coord.name}` : ""}
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {!host && (
-            <button className="btn btn-ghost btn-sm" onClick={enableHostMenu} disabled={claiming}>
-              {claiming ? <Loader2 size={13} className="animate-spin" /> : null}
-              主催者メニューを表示
-            </button>
-          )}
-          <span className={m.decided ? "pill pill-fixed" : "pill pill-open"}>{m.decided ? "日程確定" : "回答受付中"}</span>
-        </div>
+        <span className={m.decided ? "pill pill-fixed" : "pill pill-open"}>{m.decided ? "日程確定" : "回答受付中"}</span>
       </div>
       {m.purpose && <p className="muted mt-3 text-sm" style={{ maxWidth: 640 }}>{m.purpose}</p>}
 
@@ -906,7 +891,9 @@ function MeetingView({ m, me, setMe, tab, setTab, onBack, mutate, onDelete, onCo
       )}
       {!host && <div className="mt-5 mb-5" />}
 
-      {safeTab === "respond" && <Respond m={m} me={me} setMe={setMe} mutate={mutate} say={say} />}
+      {safeTab === "respond" && (
+        <Respond m={m} who={viewer} setWho={pickViewer} mutate={mutate} say={say} />
+      )}
       {host && safeTab === "result" && <Result m={m} mutate={mutate} say={say} others={others} />}
       {host && safeTab === "setting" && <Setting m={m} mutate={mutate} onDelete={onDelete} onCopy={onCopy} />}
     </div>
@@ -914,8 +901,7 @@ function MeetingView({ m, me, setMe, tab, setTab, onBack, mutate, onDelete, onCo
 }
 
 /* ---------------- 出欠入力 ---------------- */
-function Respond({ m, me, setMe, mutate, say }) {
-  const [who, setWho] = useState(me || "");
+function Respond({ m, who, setWho, mutate, say }) {
   const [newName, setNewName] = useState("");
   const existing = m.responses?.[who];
   const [answers, setAnswers] = useState({});
@@ -926,7 +912,6 @@ function Respond({ m, me, setMe, mutate, say }) {
     setProps(existing?.proposals || []);
   }, [who, m.id]); // eslint-disable-line
 
-  // 他の人の回答が更新されたとき、自分以外は最新を見る（自分の編集中 answers は保持）
   const cands = [...m.candidates].sort(sortCands);
   const columns = useMemo(() => {
     const names = [...m.participants.map((p) => p.name)];
@@ -946,7 +931,7 @@ function Respond({ m, me, setMe, mutate, say }) {
     rememberPastNames([who]);
     await mutate((mm) => ({
       ...mm,
-      participants: mm.participants.some((p) => p.name === who) ? mm.participants : [...mm.participants, { id: uid(), name: who, required: false }],
+      participants: mm.participants.some((p) => p.name === who) ? mm.participants : [...mm.participants, { id: uid(), name: who, required: false, coordinator: false }],
       responses: {
         ...mm.responses,
         [who]: {
@@ -960,7 +945,6 @@ function Respond({ m, me, setMe, mutate, say }) {
         },
       },
     }), "回答を保存しました");
-    setMe(who);
   };
 
   return (
@@ -970,7 +954,7 @@ function Respond({ m, me, setMe, mutate, say }) {
         <div className="flex flex-wrap gap-2">
           {m.participants.map((p) => (
             <button key={p.id} className={`chipbtn ${who === p.name ? "on" : ""}`} style={{ fontFamily: "'Noto Sans JP',sans-serif" }} onClick={() => setWho(p.name)}>
-              {p.name}{m.responses?.[p.name] ? " ✓" : ""}
+              {p.name}{p.coordinator ? "・調整者" : ""}{m.responses?.[p.name] ? " ✓" : ""}
             </button>
           ))}
           <span className="flex gap-1.5">
@@ -979,6 +963,9 @@ function Respond({ m, me, setMe, mutate, say }) {
             <button className="btn btn-ghost btn-sm" onClick={() => { if (newName.trim()) { setWho(newName.trim()); setNewName(""); } }}>この名前で回答</button>
           </span>
         </div>
+        {who && isCoordinatorName(m, who) && (
+          <div className="text-xs mt-3" style={{ color: "var(--acc)" }}>調整者として「集計・確定」「設定」タブが使えます。</div>
+        )}
       </div>
 
       {who && (
@@ -1130,7 +1117,7 @@ function Result({ m, mutate, say, others }) {
           <div className="flex items-start gap-2" style={{ color: "var(--mb)" }}>
             <AlertTriangle size={16} style={{ marginTop: 2, flexShrink: 0 }} />
             <div>
-              <div className="font-bold text-sm">主催者の候補だけでは決まりにくそうです</div>
+              <div className="font-bold text-sm">候補だけでは決まりにくそうです</div>
               <p className="text-xs mt-1" style={{ color: "var(--ink2)" }}>
                 回答タブで代替日時を提案してもらい、下の追加候補から候補に載せると再集計できます。
               </p>
@@ -1307,27 +1294,52 @@ function Setting({ m, mutate, onDelete, onCopy }) {
       </div>
 
       <div className="card p-5">
-        <div className="eyebrow mb-3">参加予定者</div>
+        <div className="eyebrow mb-3">参加予定者・調整者</div>
         <div className="flex flex-wrap gap-2 mb-3">
           {m.participants.map((p) => (
             <span key={p.id} className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-bold"
-              style={{ background: p.required ? "var(--okbg)" : "#F1F4F8", color: p.required ? "var(--ok)" : "var(--ink2)", borderRadius: 999 }}>
+              style={{
+                background: p.coordinator ? "var(--accbg)" : p.required ? "var(--okbg)" : "#F1F4F8",
+                color: p.coordinator ? "var(--acc)" : p.required ? "var(--ok)" : "var(--ink2)",
+                borderRadius: 999,
+                border: p.coordinator ? "1px solid var(--acc)" : "1px solid transparent",
+              }}>
+              <button title="調整者にする（1人だけ）" style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "inherit", font: "inherit", fontWeight: 700 }}
+                onClick={() => mutate((mm) => ({
+                  ...mm,
+                  participants: mm.participants.map((x) => ({ ...x, coordinator: x.id === p.id })),
+                }), `${p.name} を調整者にしました`)}>
+                {p.coordinator ? "調整者" : "調整者にする"}
+              </button>
+              <span>{p.name}</span>
               <button title="必須参加者に切り替える" style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "inherit", display: "flex" }}
                 onClick={() => mutate((mm) => ({ ...mm, participants: mm.participants.map((x) => x.id === p.id ? { ...x, required: !x.required } : x) }))}>
                 <Star size={12} fill={p.required ? "currentColor" : "none"} />
               </button>
-              {p.name}
               <button style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "inherit", display: "flex" }} aria-label={`${p.name}を外す`}
-                onClick={() => mutate((mm) => ({ ...mm, participants: mm.participants.filter((x) => x.id !== p.id) }), "参加者を外しました")}><X size={12} /></button>
+                onClick={() => mutate((mm) => {
+                  const next = mm.participants.filter((x) => x.id !== p.id);
+                  if (next.length && !next.some((x) => x.coordinator)) next[0] = { ...next[0], coordinator: true };
+                  return { ...mm, participants: next };
+                }, "参加者を外しました")}><X size={12} /></button>
             </span>
           ))}
         </div>
+        <div className="text-xs muted mb-3">調整者は1人だけです。名前を選んで回答すると、調整者には集計・確定／設定タブが表示されます。</div>
         <div className="flex gap-2">
           <input type="text" value={nameInput} onChange={(e) => setNameInput(e.target.value)} placeholder="名前を追加（カンマ区切り可）" />
           <button className="btn btn-ghost" onClick={() => {
             const list = nameInput.split(/[、,\n\s]+/).map((s) => s.trim()).filter(Boolean);
             if (!list.length) return;
-            mutate((mm) => ({ ...mm, participants: [...mm.participants, ...list.filter((n) => !mm.participants.some((p) => p.name === n)).map((n) => ({ id: uid(), name: n, required: false }))] }), "参加者を追加しました");
+            mutate((mm) => ({
+              ...mm,
+              participants: [
+                ...mm.participants,
+                ...list.filter((n) => !mm.participants.some((p) => p.name === n)).map((n) => ({
+                  id: uid(), name: n, required: false, coordinator: false,
+                })),
+              ],
+            }), "参加者を追加しました");
             setNameInput("");
           }}><Plus size={15} />追加</button>
         </div>
