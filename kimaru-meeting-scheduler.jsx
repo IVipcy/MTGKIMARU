@@ -12,6 +12,9 @@ import {
   upsertMeeting,
   removeMeeting,
   subscribeMeeting,
+  getMyIds,
+  forgetId,
+  rememberId,
 } from "./src/api";
 
 /* ------------------------------------------------------------------ */
@@ -330,6 +333,8 @@ export default function App() {
   const [me, setMe] = useState("");
   const [view, setView] = useState({ name: "home" });
   const [toast, setToast] = useState("");
+  // 招待リンク経由で開いた参加者は会議画面だけ（一覧へ戻れない）
+  const [inviteGuest, setInviteGuest] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -339,6 +344,9 @@ export default function App() {
       } catch { /* noop */ }
 
       const mid = new URLSearchParams(window.location.search).get("m");
+      const owned = mid ? getMyIds().includes(mid) : false;
+      if (mid && !owned) setInviteGuest(true);
+
       if (!isSupabaseConfigured) {
         setBoard({ meetings: [] });
         setBootError("not_configured");
@@ -347,8 +355,12 @@ export default function App() {
       }
 
       try {
-        const { meetings, error } = await bootstrapMeetings(mid);
-        setBoard({ meetings });
+        const { meetings, inviteMeeting, error } = await bootstrapMeetings(mid);
+        const list = [...meetings];
+        if (inviteMeeting && !list.some((m) => m.id === inviteMeeting.id)) {
+          list.unshift(inviteMeeting);
+        }
+        setBoard({ meetings: list });
         setBootError(error);
         if (mid) setView({ name: "meeting", id: mid, tab: "respond" });
       } catch (e) {
@@ -394,6 +406,7 @@ export default function App() {
 
   const openMeeting = (id, tab = "respond") => {
     const t = ["respond", "result", "setting"].includes(tab) ? tab : "respond";
+    setInviteGuest(false);
     setView({ name: "meeting", id, tab: t });
     const url = new URL(window.location.href);
     url.searchParams.set("m", id);
@@ -401,11 +414,18 @@ export default function App() {
     window.history.replaceState({}, "", url);
   };
   const goHome = () => {
+    if (inviteGuest) return;
     setView({ name: "home" });
     const url = new URL(window.location.href);
     url.searchParams.delete("m");
     url.searchParams.delete("host");
     window.history.replaceState({}, "", url);
+  };
+
+  const hideFromList = (id) => {
+    forgetId(id);
+    setBoard((b) => ({ meetings: (b?.meetings || []).filter((x) => x.id !== id) }));
+    say("一覧から外しました");
   };
 
   // 開いている会議をリアルタイム同期
@@ -414,8 +434,9 @@ export default function App() {
     return subscribeMeeting(view.id, (payload) => putMeeting(payload));
   }, [view.name, view.id, putMeeting]);
 
-  const meetings = board?.meetings || [];
-  const current = view.id ? meetings.find((m) => m.id === view.id) : null;
+  const ownedIds = new Set(getMyIds());
+  const meetings = (board?.meetings || []).filter((m) => ownedIds.has(m.id));
+  const current = view.id ? (board?.meetings || []).find((m) => m.id === view.id) : null;
 
   if (!board) {
     return (
@@ -448,19 +469,20 @@ export default function App() {
   return (
     <div className="km">
       <style>{CSS}</style>
-      <Header onHome={goHome} />
+      <Header onHome={inviteGuest ? null : goHome} />
       <main className="mx-auto px-4 pb-24" style={{ maxWidth: 1020 }}>
         {bootError && bootError !== "not_configured" && (
           <div className="card p-3 mb-4 text-sm" style={{ borderColor: "var(--ng)", color: "var(--ng)", background: "var(--ngbg)" }}>
             データの読み込みに失敗しました: {String(bootError)}
           </div>
         )}
-        {view.name === "home" && (
+        {view.name === "home" && !inviteGuest && (
           <Home meetings={meetings}
             onOpen={(id) => openMeeting(id)}
-            onNew={() => setView({ name: "new" })} />
+            onNew={() => setView({ name: "new" })}
+            onHide={hideFromList} />
         )}
-        {view.name === "new" && (
+        {view.name === "new" && !inviteGuest && (
           <NewMeeting
             pastNames={loadPastNames()}
             allMeetings={meetings}
@@ -469,6 +491,7 @@ export default function App() {
             onCreate={async (m) => {
               rememberPastNames(m.participants.map((p) => p.name));
               await upsertMeeting(m);
+              rememberId(m.id);
               putMeeting(m);
               say("調整リンクを発行しました");
               return m;
@@ -480,16 +503,16 @@ export default function App() {
           <MeetingView m={current} me={me} setMe={saveMe} say={say}
             tab={["respond", "result", "setting"].includes(view.tab) ? view.tab : "respond"}
             setTab={(t) => setView({ ...view, tab: t })}
-            onBack={goHome}
+            onBack={inviteGuest ? null : goHome}
             others={meetings.filter((x) => x.id !== current.id)}
             mutate={(fn, msg) => mutate(current.id, fn, msg)}
-            onCopy={() => setView({ name: "new", copyFrom: current.id })}
+            onCopy={inviteGuest ? null : () => setView({ name: "new", copyFrom: current.id })}
             onDelete={async () => {
               try {
                 await removeMeeting(current.id);
                 setBoard((b) => ({ meetings: (b?.meetings || []).filter((x) => x.id !== current.id) }));
                 say("会議を削除しました");
-                goHome();
+                if (!inviteGuest) goHome();
               } catch (e) {
                 console.error(e);
                 say("削除に失敗しました");
@@ -503,7 +526,7 @@ export default function App() {
         )}
       </main>
       <footer className="mx-auto px-4 pb-10 text-xs muted" style={{ maxWidth: 1020 }}>
-        会議データは Supabase に保存されます。招待リンクを知っている人は同じボードを開けます。
+        提供元：㈱CONGEN　｜　会議データは Supabase に保存されます。招待リンクを知っている人は同じボードを開けます。
       </footer>
       {toast && <div className="toast">{toast}</div>}
     </div>
@@ -512,15 +535,20 @@ export default function App() {
 
 /* ---------------- header ---------------- */
 function Header({ onHome }) {
+  const brand = (
+    <span className="flex items-center gap-2.5">
+      <span className="logo-grid"><i /><i className="f" /><i /><i /><i /><i className="f" /></span>
+      <span style={{ fontFamily: "'Zen Kaku Gothic New',sans-serif", fontWeight: 900, fontSize: 17, letterSpacing: ".02em", color: "var(--ink)" }}>キマル</span>
+    </span>
+  );
   return (
     <header className="sticky top-0 z-40" style={{ background: "rgba(232,237,242,.88)", backdropFilter: "blur(8px)", borderBottom: "1px solid var(--line)" }}>
       <div className="mx-auto px-4 py-3 flex items-center gap-3" style={{ maxWidth: 1020 }}>
-        <button className="btn btn-quiet" onClick={onHome} style={{ padding: 0 }}>
-          <span className="flex items-center gap-2.5">
-            <span className="logo-grid"><i /><i className="f" /><i /><i /><i /><i className="f" /></span>
-            <span style={{ fontFamily: "'Zen Kaku Gothic New',sans-serif", fontWeight: 900, fontSize: 17, letterSpacing: ".02em", color: "var(--ink)" }}>キマル</span>
-          </span>
-        </button>
+        {onHome ? (
+          <button className="btn btn-quiet" onClick={onHome} style={{ padding: 0 }}>{brand}</button>
+        ) : (
+          <div style={{ padding: 0 }}>{brand}</div>
+        )}
         <span className="eyebrow hidden sm:inline">会議調整サポート</span>
       </div>
     </header>
@@ -528,7 +556,7 @@ function Header({ onHome }) {
 }
 
 /* ---------------- home ---------------- */
-function Home({ meetings, onOpen, onNew }) {
+function Home({ meetings, onOpen, onNew, onHide }) {
   return (
     <div>
       <section className="pt-10 pb-7">
@@ -556,23 +584,38 @@ function Home({ meetings, onOpen, onNew }) {
         </div>
       ) : (
         <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill,minmax(300px,1fr))" }}>
-          {meetings.map((m) => <MeetingCard key={m.id} m={m} onOpen={onOpen} />)}
+          {meetings.map((m) => <MeetingCard key={m.id} m={m} onOpen={onOpen} onHide={onHide} />)}
         </div>
       )}
     </div>
   );
 }
 
-function MeetingCard({ m, onOpen }) {
+function MeetingCard({ m, onOpen, onHide }) {
   const answered = Object.keys(m.responses || {}).length;
   const total = m.participants.length;
   const best = bestOf(m);
   const dec = m.decided ? m.candidates.find((c) => c.id === m.decided.candidateId) : null;
   return (
-    <button className="card p-4 text-left" style={{ cursor: "pointer" }} onClick={() => onOpen(m.id)}>
+    <div className="card p-4 text-left" style={{ cursor: "pointer", position: "relative" }} onClick={() => onOpen(m.id)}>
       <div className="flex items-start justify-between gap-2 mb-2">
         <h3 style={{ fontSize: 15.5 }}>{m.title}</h3>
-        <span className={m.decided ? "pill pill-fixed" : "pill pill-open"}>{m.decided ? "確定" : "回答受付中"}</span>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <span className={m.decided ? "pill pill-fixed" : "pill pill-open"}>{m.decided ? "確定" : "回答受付中"}</span>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            title="一覧から外す"
+            aria-label="一覧から外す"
+            style={{ padding: "6px 8px", color: "var(--ink3)" }}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (window.confirm(`「${m.title}」を一覧から外しますか？\n（招待リンク自体は残ります）`)) onHide(m.id);
+            }}
+          >
+            <Trash2 size={14} />
+          </button>
+        </div>
       </div>
       {m.purpose && <p className="muted text-xs mb-3" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{m.purpose}</p>}
       {dec ? (
@@ -589,7 +632,7 @@ function MeetingCard({ m, onOpen }) {
         <span className="flex items-center gap-1"><Users size={12} />{answered}/{total}</span>
         <span className="flex items-center gap-1"><Calendar size={12} />{m.candidates.length}候補</span>
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -862,7 +905,7 @@ function MeetingView({ m, me, setMe, tab, setTab, onBack, mutate, onDelete, onCo
 
   return (
     <div className="py-7">
-      <button className="btn btn-quiet mb-3" onClick={onBack}><ArrowLeft size={15} />会議一覧へ戻る</button>
+      {onBack && <button className="btn btn-quiet mb-3" onClick={onBack}><ArrowLeft size={15} />会議一覧へ戻る</button>}
       <div className="flex flex-wrap items-start gap-3 justify-between">
         <div>
           <h1 style={{ fontSize: 24 }}>{m.title}</h1>
@@ -1373,8 +1416,8 @@ function Setting({ m, mutate, onDelete, onCopy }) {
       <div className="card p-5">
         <div className="eyebrow mb-3">この会議を</div>
         <div className="flex flex-wrap gap-2">
-          <button className="btn btn-ghost" onClick={onCopy}><Copy size={15} />同じ設定で複製する</button>
-          {confirmDel ? (
+          {onCopy && <button className="btn btn-ghost" onClick={onCopy}><Copy size={15} />同じ設定で複製する</button>}
+          {onDelete && (confirmDel ? (
             <span className="flex gap-2 items-center">
               <span className="text-sm font-bold" style={{ color: "var(--ng)" }}>回答も消えます。削除しますか？</span>
               <button className="btn btn-sm" style={{ background: "var(--ng)", color: "#fff" }} onClick={onDelete}>削除する</button>
@@ -1382,7 +1425,7 @@ function Setting({ m, mutate, onDelete, onCopy }) {
             </span>
           ) : (
             <button className="btn btn-ghost" style={{ color: "var(--ng)" }} onClick={() => setConfirmDel(true)}><Trash2 size={15} />削除する</button>
-          )}
+          ))}
         </div>
       </div>
     </div>

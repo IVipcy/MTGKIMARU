@@ -35,7 +35,7 @@ function readLegacyMeetings() {
 }
 
 export async function bootstrapMeetings(inviteId) {
-  if (!isSupabaseConfigured) return { meetings: [], error: "not_configured" };
+  if (!isSupabaseConfigured) return { meetings: [], inviteMeeting: null, error: "not_configured" };
 
   const legacy = readLegacyMeetings();
   for (const m of legacy) {
@@ -44,20 +44,16 @@ export async function bootstrapMeetings(inviteId) {
   }
   if (legacy.length) localStorage.removeItem(LEGACY_BOARD);
 
-  if (inviteId) rememberId(inviteId);
-
   const ids = getMyIds();
   const meetings = await fetchMeetingsByIds(ids);
 
-  if (inviteId && !meetings.some((m) => m.id === inviteId)) {
-    const one = await fetchMeeting(inviteId);
-    if (one) {
-      rememberId(inviteId);
-      return { meetings: [one, ...meetings.filter((m) => m.id !== inviteId)], error: null };
-    }
+  // 招待リンクは自分の一覧に入れない（その会議画面だけ開ける）
+  let inviteMeeting = null;
+  if (inviteId) {
+    inviteMeeting = meetings.find((m) => m.id === inviteId) || (await fetchMeeting(inviteId));
   }
 
-  return { meetings, error: null };
+  return { meetings, inviteMeeting, error: null };
 }
 
 export async function fetchMeeting(id) {
@@ -81,7 +77,6 @@ export async function upsertMeeting(meeting) {
     updated_at: new Date().toISOString(),
   });
   if (error) throw error;
-  rememberId(meeting.id);
 }
 
 export async function removeMeeting(id) {
