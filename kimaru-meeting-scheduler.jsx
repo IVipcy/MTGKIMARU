@@ -577,10 +577,12 @@ function MeetingCard({ m, onOpen }) {
 
 /* ---------------- new meeting ---------------- */
 function NewMeeting({ onCancel, onCreate, pastNames, allMeetings, base }) {
-  const roster = useMemo(() => {
+  const [roster, setRoster] = useState(() => {
+    const stored = [...(pastNames || [])];
+    if (stored.length) return [...new Set(stored)].filter(Boolean).sort();
     const fromMeetings = (allMeetings || []).flatMap((m) => (m.participants || []).map((p) => p.name));
-    return [...new Set([...(pastNames || []), ...fromMeetings])].filter(Boolean).sort();
-  }, [pastNames, allMeetings]);
+    return savePastNames(fromMeetings);
+  });
 
   const [title, setTitle] = useState(base ? base.title + "（コピー）" : "");
   const [purpose, setPurpose] = useState(base?.purpose || "");
@@ -596,10 +598,17 @@ function NewMeeting({ onCancel, onCreate, pastNames, allMeetings, base }) {
     if (names.some((p) => p.name === n)) setNames(names.filter((p) => p.name !== n));
     else setNames([...names, { id: uid(), name: n, required: false }]);
   };
+  const removePast = (n, e) => {
+    e.stopPropagation();
+    const next = savePastNames(roster.filter((x) => x !== n));
+    setRoster(next);
+    setNames((cur) => cur.filter((p) => p.name !== n));
+  };
   const addNames = () => {
     const list = nameInput.split(/[、,\n\s]+/).map((s) => s.trim()).filter(Boolean);
     if (!list.length) return;
     setNames([...names, ...list.filter((n) => !names.some((p) => p.name === n)).map((n) => ({ id: uid(), name: n, required: false }))]);
+    setRoster(savePastNames([...roster, ...list]));
     setNameInput("");
   };
   const genCands = () => {
@@ -643,10 +652,21 @@ function NewMeeting({ onCancel, onCreate, pastNames, allMeetings, base }) {
             <div className="fld">前回までの参加者から選ぶ</div>
             <div className="flex flex-wrap gap-2">
               {roster.map((n) => (
-                <button key={n} type="button" className={`chipbtn ${names.some((p) => p.name === n) ? "on" : ""}`}
-                  style={{ fontFamily: "'Noto Sans JP',sans-serif" }} onClick={() => togglePast(n)}>{n}</button>
+                <span key={n} className={`chipbtn ${names.some((p) => p.name === n) ? "on" : ""}`}
+                  style={{ fontFamily: "'Noto Sans JP',sans-serif", display: "inline-flex", alignItems: "center", gap: 6, paddingRight: 6 }}>
+                  <button type="button" onClick={() => togglePast(n)}
+                    style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "inherit", font: "inherit", fontWeight: 700 }}>
+                    {n}
+                  </button>
+                  <button type="button" onClick={(e) => removePast(n, e)} aria-label={`${n}を履歴から削除`}
+                    title="履歴から削除"
+                    style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "inherit", display: "flex", opacity: 0.7 }}>
+                    <X size={12} />
+                  </button>
+                </span>
               ))}
             </div>
+            <div className="text-xs muted mt-2">× で履歴から削除できます（この会議の参加者リストとは別です）</div>
           </div>
         )}
         <div className="flex gap-2 mb-3">
