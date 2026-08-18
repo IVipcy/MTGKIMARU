@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import {
-  Calendar, Clock, Users, Plus, X, Check, Trash2, ChevronLeft, ChevronRight,
+  Calendar, Users, Plus, X, Check, Trash2, ChevronLeft, ChevronRight,
   ArrowLeft, Copy, MessageSquare, AlertTriangle,
-  Star, Loader2, CircleDot, Send, Link2,
+  Star, Loader2, CircleDot, Link2,
 } from "lucide-react";
 import {
   ME_KEY,
@@ -125,6 +125,13 @@ const CSS = `
 .km .logo-grid i.f { background:var(--ok); }
 .km a.link { color:var(--acc); text-decoration:none; font-weight:700; }
 .km a.link:hover { text-decoration:underline; }
+.km .ans-mini { width: 28px; height: 28px; border: 1px solid var(--line); background: #fff; border-radius: 8px; font-weight: 700; font-size: 13px; color: var(--ink2); cursor: pointer; padding: 0; }
+.km .ans-mini:hover { border-color: var(--ink3); }
+.km .ans-mini.on-ok { background: var(--ok); border-color: var(--ok); color: #fff; }
+.km .ans-mini.on-mb { background: var(--mb); border-color: var(--mb); color: #fff; }
+.km .ans-mini.on-ng { background: var(--ng); border-color: var(--ng); color: #fff; }
+.km th.you-col { color: var(--acc) !important; }
+.km td.you-col { background: #F7F8FE; }
 @media (prefers-reduced-motion: reduce) { .km * { transition:none !important; } }
 `;
 
@@ -193,6 +200,19 @@ function absorbProposals(mm, items) {
 }
 
 const ME_LOCAL = ME_KEY;
+const PAST_NAMES_KEY = "kimaru_past_names_v1";
+
+function loadPastNames() {
+  try { return JSON.parse(localStorage.getItem(PAST_NAMES_KEY) || "[]"); } catch { return []; }
+}
+function savePastNames(names) {
+  const uniq = [...new Set(names.map((n) => n.trim()).filter(Boolean))];
+  localStorage.setItem(PAST_NAMES_KEY, JSON.stringify(uniq));
+  return uniq;
+}
+function rememberPastNames(names) {
+  return savePastNames([...loadPastNames(), ...names]);
+}
 
 /* 集計 */
 function tally(m, c) {
@@ -303,7 +323,7 @@ export default function App() {
       if (!isSupabaseConfigured) {
         setBoard({ meetings: [] });
         setBootError("not_configured");
-        if (mid) setView({ name: "meeting", id: mid, tab: "board" });
+        if (mid) setView({ name: "meeting", id: mid, tab: "respond" });
         return;
       }
 
@@ -311,7 +331,7 @@ export default function App() {
         const { meetings, error } = await bootstrapMeetings(mid);
         setBoard({ meetings });
         setBootError(error);
-        if (mid) setView({ name: "meeting", id: mid, tab: "board" });
+        if (mid) setView({ name: "meeting", id: mid, tab: "respond" });
       } catch (e) {
         console.error(e);
         setBoard({ meetings: [] });
@@ -353,8 +373,8 @@ export default function App() {
     }
   }, [board, putMeeting, say]);
 
-  const openMeeting = (id, tab = "board") => {
-    const t = tab === "setting" ? "setting" : "board";
+  const openMeeting = (id, tab = "respond") => {
+    const t = ["respond", "result", "fix", "setting"].includes(tab) ? tab : "respond";
     setView({ name: "meeting", id, tab: t });
     const url = new URL(window.location.href);
     url.searchParams.set("m", id);
@@ -407,7 +427,7 @@ export default function App() {
   return (
     <div className="km">
       <style>{CSS}</style>
-      <Header me={me} onMe={saveMe} onHome={goHome} />
+      <Header onHome={goHome} />
       <main className="mx-auto px-4 pb-24" style={{ maxWidth: 1020 }}>
         {bootError && bootError !== "not_configured" && (
           <div className="card p-3 mb-4 text-sm" style={{ borderColor: "var(--ng)", color: "var(--ng)", background: "var(--ngbg)" }}>
@@ -415,19 +435,22 @@ export default function App() {
           </div>
         )}
         {view.name === "home" && (
-          <Home meetings={meetings} me={me}
+          <Home meetings={meetings}
             onOpen={(id) => openMeeting(id)}
             onNew={() => setView({ name: "new" })} />
         )}
         {view.name === "new" && (
-          <NewMeeting me={me}
+          <NewMeeting
+            pastNames={loadPastNames()}
+            allMeetings={meetings}
             onCancel={goHome}
             onCreate={async (m) => {
               try {
+                rememberPastNames(m.participants.map((p) => p.name));
                 await upsertMeeting(m);
                 putMeeting(m);
-                say("会議をつくりました");
-                openMeeting(m.id);
+                say("調整リンクを発行しました");
+                openMeeting(m.id, "respond");
               } catch (e) {
                 console.error(e);
                 say("作成に失敗しました");
@@ -437,8 +460,8 @@ export default function App() {
         )}
         {view.name === "meeting" && current && (
           <MeetingView m={current} me={me} setMe={saveMe} say={say}
-            tab={view.tab === "setting" ? "setting" : "board"}
-            setTab={(t) => setView({ ...view, tab: t === "setting" ? "setting" : "board" })}
+            tab={["respond", "result", "fix", "setting"].includes(view.tab) ? view.tab : "respond"}
+            setTab={(t) => setView({ ...view, tab: t })}
             onBack={goHome}
             others={meetings.filter((x) => x.id !== current.id)}
             mutate={(fn, msg) => mutate(current.id, fn, msg)}
@@ -470,10 +493,7 @@ export default function App() {
 }
 
 /* ---------------- header ---------------- */
-function Header({ me, onMe, onHome }) {
-  const [editing, setEditing] = useState(false);
-  const [tmp, setTmp] = useState(me);
-  useEffect(() => setTmp(me), [me]);
+function Header({ onHome }) {
   return (
     <header className="sticky top-0 z-40" style={{ background: "rgba(232,237,242,.88)", backdropFilter: "blur(8px)", borderBottom: "1px solid var(--line)" }}>
       <div className="mx-auto px-4 py-3 flex items-center gap-3" style={{ maxWidth: 1020 }}>
@@ -483,33 +503,19 @@ function Header({ me, onMe, onHome }) {
             <span style={{ fontFamily: "'Zen Kaku Gothic New',sans-serif", fontWeight: 900, fontSize: 17, letterSpacing: ".02em", color: "var(--ink)" }}>キマル</span>
           </span>
         </button>
-        <span className="eyebrow hidden sm:inline">会議日程ボード</span>
-        <div className="ml-auto flex items-center gap-2">
-          {editing ? (
-            <div className="flex items-center gap-1.5">
-              <input type="text" value={tmp} onChange={(e) => setTmp(e.target.value)} placeholder="あなたの名前" style={{ width: 140, padding: "6px 10px" }}
-                onKeyDown={(e) => { if (e.key === "Enter") { onMe(tmp.trim()); setEditing(false); } }} autoFocus />
-              <button className="btn btn-primary btn-sm" onClick={() => { onMe(tmp.trim()); setEditing(false); }}>保存</button>
-            </div>
-          ) : (
-            <button className="btn btn-ghost btn-sm" onClick={() => setEditing(true)}>
-              <Users size={13} />{me ? me : "名前を設定"}
-            </button>
-          )}
-        </div>
+        <span className="eyebrow hidden sm:inline">会議調整サポート</span>
       </div>
     </header>
   );
 }
 
 /* ---------------- home ---------------- */
-function Home({ meetings, me, onOpen, onNew }) {
-  const mine = meetings.filter((m) => !m.decided && me && m.participants.some((p) => p.name === me) && !m.responses?.[me]);
+function Home({ meetings, onOpen, onNew }) {
   return (
     <div>
       <section className="pt-10 pb-7">
         <div className="eyebrow mb-2">Meeting scheduler</div>
-        <h1 style={{ fontSize: 30, letterSpacing: "-.01em" }}>会議の日程を、<br className="sm:hidden" />ひとつのボードで決めきる。</h1>
+        <h1 style={{ fontSize: 30, letterSpacing: "-.01em" }}>会議調整のサポートツール</h1>
         <p className="muted mt-3" style={{ maxWidth: 560 }}>
           候補日時を並べて、参加者は ○ △ × を選ぶだけ。合意の濃さがバーで見えるので、どこで決まるかが一目でわかります。
         </p>
@@ -517,19 +523,6 @@ function Home({ meetings, me, onOpen, onNew }) {
           <button className="btn btn-primary" onClick={onNew}><Plus size={15} />会議をつくる</button>
         </div>
       </section>
-
-      {mine.length > 0 && (
-        <section className="card p-4 mb-5" style={{ borderColor: "var(--acc)", background: "var(--accbg)" }}>
-          <div className="flex items-center gap-2 mb-2" style={{ color: "var(--acc)" }}>
-            <Send size={15} /><span className="font-bold text-sm">あなたの回答待ちが {mine.length} 件あります</span>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {mine.map((m) => (
-              <button key={m.id} className="btn btn-ghost btn-sm" onClick={() => onOpen(m.id, "respond")}>{m.title} に回答する</button>
-            ))}
-          </div>
-        </section>
-      )}
 
       <div className="flex items-baseline justify-between mb-3">
         <h2 style={{ fontSize: 15 }}>会議一覧</h2>
@@ -540,7 +533,7 @@ function Home({ meetings, me, onOpen, onNew }) {
         <div className="card p-10 text-center">
           <Calendar size={26} style={{ color: "var(--ink3)", margin: "0 auto 10px" }} />
           <div className="font-bold mb-1">まだ会議がありません</div>
-          <p className="muted text-sm mb-4">会議名と候補日時を入れるところから始めましょう。1分で作れます。</p>
+          <p className="muted text-sm mb-4">会議内容・参加者・候補日時を入れて、調整リンクを発行しましょう。</p>
           <button className="btn btn-primary" onClick={onNew}><Plus size={15} />会議をつくる</button>
         </div>
       ) : (
@@ -577,18 +570,20 @@ function MeetingCard({ m, onOpen }) {
       <div className="flex items-center gap-3 text-xs muted mono pt-2 divide" style={{ marginTop: 10, paddingTop: 8 }}>
         <span className="flex items-center gap-1"><Users size={12} />{answered}/{total}</span>
         <span className="flex items-center gap-1"><Calendar size={12} />{m.candidates.length}候補</span>
-        {m.deadline && <span className="flex items-center gap-1"><Clock size={12} />〆{fmtMD(m.deadline)}</span>}
       </div>
     </button>
   );
 }
 
 /* ---------------- new meeting ---------------- */
-function NewMeeting({ onCancel, onCreate, me, base }) {
+function NewMeeting({ onCancel, onCreate, pastNames, allMeetings, base }) {
+  const roster = useMemo(() => {
+    const fromMeetings = (allMeetings || []).flatMap((m) => (m.participants || []).map((p) => p.name));
+    return [...new Set([...(pastNames || []), ...fromMeetings])].filter(Boolean).sort();
+  }, [pastNames, allMeetings]);
+
   const [title, setTitle] = useState(base ? base.title + "（コピー）" : "");
   const [purpose, setPurpose] = useState(base?.purpose || "");
-  const [organizer, setOrganizer] = useState(base?.organizer || me || "");
-  const [deadline, setDeadline] = useState("");
   const [names, setNames] = useState(base ? base.participants.map((p) => ({ ...p })) : []);
   const [nameInput, setNameInput] = useState("");
   const [dates, setDates] = useState([]);
@@ -597,6 +592,10 @@ function NewMeeting({ onCancel, onCreate, me, base }) {
   const [cands, setCands] = useState(base ? base.candidates.map((c) => ({ ...c, id: uid() })) : []);
   const [err, setErr] = useState("");
 
+  const togglePast = (n) => {
+    if (names.some((p) => p.name === n)) setNames(names.filter((p) => p.name !== n));
+    else setNames([...names, { id: uid(), name: n, required: false }]);
+  };
   const addNames = () => {
     const list = nameInput.split(/[、,\n\s]+/).map((s) => s.trim()).filter(Boolean);
     if (!list.length) return;
@@ -616,37 +615,44 @@ function NewMeeting({ onCancel, onCreate, me, base }) {
     if (!title.trim()) { setErr("会議名を入れてください。"); return; }
     if (!cands.length) { setErr("候補日時を1つ以上つくってください。"); return; }
     onCreate({
-      id: uid(), title: title.trim(), purpose: purpose.trim(), organizer: organizer.trim() || "主催者",
-      deadline, participants: names, candidates: [...cands].sort(sortCands),
-      responses: {}, decided: null, meetingUrl: base?.meetingUrl || "", createdAt: Date.now(),
+      id: uid(), title: title.trim(), purpose: purpose.trim(), organizer: "",
+      deadline: "", participants: names, candidates: [...cands].sort(sortCands),
+      responses: {}, decided: null, meetingUrl: "", createdAt: Date.now(),
     });
   };
 
   return (
     <div className="py-7">
       <button className="btn btn-quiet mb-3" onClick={onCancel}><ArrowLeft size={15} />会議一覧へ戻る</button>
-      <h1 style={{ fontSize: 24 }} className="mb-6">新しい会議をつくる</h1>
+      <h1 style={{ fontSize: 24 }} className="mb-6">調整リンクを発行する</h1>
 
       <div className="card p-5 mb-4">
-        <div className="eyebrow mb-4">01 — 会議の内容</div>
-        <div className="grid gap-4" style={{ gridTemplateColumns: "1fr" }}>
+        <div className="eyebrow mb-4">STEP1：会議の内容を記載してください</div>
+        <div className="grid gap-4">
           <Field label="会議名"><input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="例）Q3 販売戦略レビュー" /></Field>
           <Field label="議題・目的" hint="参加者が準備できるように、決めたいことを書いておくと回答が早くなります。">
             <textarea rows={3} value={purpose} onChange={(e) => setPurpose(e.target.value)} placeholder="例）新価格の適用時期と、営業への展開方法を決める" />
           </Field>
-          <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))" }}>
-            <Field label="主催者"><input type="text" value={organizer} onChange={(e) => setOrganizer(e.target.value)} placeholder="あなたの名前" /></Field>
-            <Field label="回答の締切（任意）"><input type="date" value={deadline} onChange={(e) => setDeadline(e.target.value)} /></Field>
-          </div>
         </div>
       </div>
 
       <div className="card p-5 mb-4">
-        <div className="eyebrow mb-4">02 — 参加予定者</div>
+        <div className="eyebrow mb-4">STEP2：参加予定者を選択してください</div>
+        {roster.length > 0 && (
+          <div className="mb-4">
+            <div className="fld">前回までの参加者から選ぶ</div>
+            <div className="flex flex-wrap gap-2">
+              {roster.map((n) => (
+                <button key={n} type="button" className={`chipbtn ${names.some((p) => p.name === n) ? "on" : ""}`}
+                  style={{ fontFamily: "'Noto Sans JP',sans-serif" }} onClick={() => togglePast(n)}>{n}</button>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="flex gap-2 mb-3">
           <input type="text" value={nameInput} onChange={(e) => setNameInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addNames(); } }}
-            placeholder="名前を入力（カンマ・改行でまとめて追加できます）" />
+            placeholder="新しい名前を入力（カンマ・改行でまとめて追加できます）" />
           <button className="btn btn-ghost" onClick={addNames}><Plus size={15} />追加</button>
         </div>
         {names.length === 0 ? <div className="muted text-xs">まだ誰も入っていません。あとから追加もできます。</div> : (
@@ -668,7 +674,7 @@ function NewMeeting({ onCancel, onCreate, me, base }) {
       </div>
 
       <div className="card p-5 mb-4">
-        <div className="eyebrow mb-4">03 — 候補日時</div>
+        <div className="eyebrow mb-4">STEP3：候補日時を設定してください</div>
         <div className="grid gap-6" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))" }}>
           <div>
             <label className="fld">日付を選ぶ（複数可）</label>
@@ -692,7 +698,6 @@ function NewMeeting({ onCancel, onCreate, me, base }) {
             </button>
           </div>
         </div>
-
         {cands.length > 0 && (
           <div className="mt-5 pt-4 divide">
             <div className="flex items-center justify-between mb-2">
@@ -712,10 +717,11 @@ function NewMeeting({ onCancel, onCreate, me, base }) {
       </div>
 
       {err && <div className="card p-3 mb-4 text-sm font-bold" style={{ borderColor: "var(--ng)", color: "var(--ng)", background: "var(--ngbg)" }}>{err}</div>}
-      <div className="flex gap-2">
-        <button className="btn btn-primary" onClick={submit}>この内容で会議をつくる</button>
+      <div className="flex flex-wrap gap-2 items-center">
+        <button className="btn btn-primary" onClick={submit}><Link2 size={15} />この内容で調整リンクを発行する</button>
         <button className="btn btn-ghost" onClick={onCancel}>やめる</button>
       </div>
+      <p className="text-xs muted mt-3">発行後、表示されるリンクを参加者へ手動で送付してください。</p>
     </div>
   );
 }
@@ -730,7 +736,7 @@ function MeetingView({ m, me, setMe, tab, setTab, onBack, mutate, onDelete, onCo
   const copyInvite = async () => {
     try {
       await navigator.clipboard.writeText(inviteUrl);
-      say("招待リンクをコピーしました。参加者に送ってください");
+      say("調整リンクをコピーしました。参加者に手動で送ってください");
     } catch { say("コピーできませんでした"); }
   };
 
@@ -741,16 +747,23 @@ function MeetingView({ m, me, setMe, tab, setTab, onBack, mutate, onDelete, onCo
         <div>
           <h1 style={{ fontSize: 24 }}>{m.title}</h1>
           <div className="muted text-xs mt-1 mono">
-            主催 {m.organizer} ・ 参加予定 {m.participants.length}名 ・ 回答 {Object.keys(m.responses || {}).length}名
-            {m.deadline ? ` ・ 締切 ${fmtMD(m.deadline)}` : ""}
+            参加予定 {m.participants.length}名 ・ 回答 {Object.keys(m.responses || {}).length}名
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <button className="btn btn-ghost btn-sm" onClick={copyInvite}><Link2 size={14} />招待リンクをコピー</button>
+          <button className="btn btn-ghost btn-sm" onClick={copyInvite}><Link2 size={14} />調整リンクをコピー</button>
           <span className={m.decided ? "pill pill-fixed" : "pill pill-open"}>{m.decided ? "日程確定" : "回答受付中"}</span>
         </div>
       </div>
       {m.purpose && <p className="muted mt-3 text-sm" style={{ maxWidth: 640 }}>{m.purpose}</p>}
+
+      <div className="card p-4 mt-4" style={{ borderColor: "var(--acc)", background: "var(--accbg)" }}>
+        <div className="fld" style={{ color: "var(--acc)", marginBottom: 6 }}>調整リンクを参加者に送付（手動）</div>
+        <div className="flex flex-wrap gap-2 items-center">
+          <code className="mono text-xs" style={{ flex: 1, minWidth: 200, wordBreak: "break-all" }}>{inviteUrl}</code>
+          <button className="btn btn-primary btn-sm" onClick={copyInvite}><Copy size={13} />コピー</button>
+        </div>
+      </div>
 
       {dec && (
         <div className="card p-4 mt-4" style={{ borderColor: "var(--ok)", background: "var(--okbg)" }}>
@@ -760,78 +773,73 @@ function MeetingView({ m, me, setMe, tab, setTab, onBack, mutate, onDelete, onCo
       )}
 
       <div className="flex gap-5 mt-5 mb-5" style={{ borderBottom: "1px solid var(--line)" }}>
-        {[["board", "出欠・集計"], ["setting", "設定"]].map(([k, label]) => (
+        {[["respond", "回答"], ["result", "集計"], ["fix", "確定"], ["setting", "設定"]].map(([k, label]) => (
           <button key={k} className={`tab ${tab === k ? "on" : ""}`} onClick={() => setTab(k)}>{label}</button>
         ))}
       </div>
 
-      {tab === "board" && (
-        <div className="grid gap-8">
-          <section>
-            <div className="eyebrow mb-3">出欠を入力</div>
-            <Respond m={m} me={me} setMe={setMe} mutate={mutate} say={say} others={others} />
-          </section>
-          <section>
-            <div className="eyebrow mb-3">集計・確定</div>
-            <Result m={m} mutate={mutate} say={say} others={others} />
-          </section>
-        </div>
-      )}
+      {tab === "respond" && <Respond m={m} me={me} setMe={setMe} mutate={mutate} say={say} />}
+      {tab === "result" && <Result m={m} mutate={mutate} />}
+      {tab === "fix" && <FixAndShare m={m} mutate={mutate} say={say} others={others} />}
       {tab === "setting" && <Setting m={m} mutate={mutate} onDelete={onDelete} onCopy={onCopy} />}
     </div>
   );
 }
 
 /* ---------------- 出欠入力 ---------------- */
-function Respond({ m, me, setMe, mutate, say, others }) {
+function Respond({ m, me, setMe, mutate, say }) {
   const [who, setWho] = useState(me || "");
   const [newName, setNewName] = useState("");
   const existing = m.responses?.[who];
   const [answers, setAnswers] = useState({});
-  const [comment, setComment] = useState("");
   const [props, setProps] = useState([]);
 
   useEffect(() => {
     setAnswers(existing?.answers || {});
-    setComment(existing?.comment || "");
     setProps(existing?.proposals || []);
   }, [who, m.id]); // eslint-disable-line
 
+  // 他の人の回答が更新されたとき、自分以外は最新を見る（自分の編集中 answers は保持）
   const cands = [...m.candidates].sort(sortCands);
+  const columns = useMemo(() => {
+    const names = [...m.participants.map((p) => p.name)];
+    Object.keys(m.responses || {}).forEach((n) => { if (!names.includes(n)) names.push(n); });
+    if (who && !names.includes(who)) names.push(who);
+    return names;
+  }, [m.participants, m.responses, who]);
+
+  const allNg = cands.length > 0 && cands.every((c) => answers[c.id] === "ng");
   const done = cands.filter((c) => answers[c.id]).length;
 
-  /* 他会議との重複チェック */
-  const conflicts = useMemo(() => {
-    const map = {};
-    others.forEach((o) => {
-      if (!o.decided) return;
-      const c = o.candidates.find((x) => x.id === o.decided.candidateId);
-      if (!c) return;
-      if (!o.participants.some((p) => p.name === who)) return;
-      cands.forEach((cc) => {
-        if (cc.date === c.date && mins(cc.start) < mins(c.end) && mins(c.start) < mins(cc.end)) map[cc.id] = o.title;
-      });
-    });
-    return map;
-  }, [others, who, m.id]); // eslint-disable-line
+  const setAnswer = (cid, v) => setAnswers((a) => ({ ...a, [cid]: v }));
 
   const save = async () => {
     if (!who) { say("名前を選んでください"); return; }
     if (!Object.keys(answers).length) { say("1つ以上の候補に回答してください"); return; }
+    rememberPastNames([who]);
     await mutate((mm) => ({
       ...mm,
       participants: mm.participants.some((p) => p.name === who) ? mm.participants : [...mm.participants, { id: uid(), name: who, required: false }],
-      responses: { ...mm.responses, [who]: { name: who, answers, comment: comment.trim(), proposals: props.filter((p) => p.date && p.start).map((p) => ({ date: p.date, start: snap30(p.start), end: snap30(p.end || addMin(p.start, 60)) })), updatedAt: Date.now() } },
+      responses: {
+        ...mm.responses,
+        [who]: {
+          name: who,
+          answers,
+          comment: "",
+          proposals: props.filter((p) => p.date && p.start).map((p) => ({
+            date: p.date, start: snap30(p.start), end: snap30(p.end || addMin(p.start, 60)),
+          })),
+          updatedAt: Date.now(),
+        },
+      },
     }), "回答を保存しました");
-    if (!me) setMe(who);
+    setMe(who);
   };
-
-  const setAll = (v) => { const a = {}; cands.forEach((c) => { a[c.id] = v; }); setAnswers(a); };
 
   return (
     <div className="grid gap-4">
       <div className="card p-4">
-        <label className="fld">あなたの名前</label>
+        <div className="eyebrow mb-3">STEP1：名前を選択してください</div>
         <div className="flex flex-wrap gap-2">
           {m.participants.map((p) => (
             <button key={p.id} className={`chipbtn ${who === p.name ? "on" : ""}`} style={{ fontFamily: "'Noto Sans JP',sans-serif" }} onClick={() => setWho(p.name)}>
@@ -844,44 +852,65 @@ function Respond({ m, me, setMe, mutate, say, others }) {
             <button className="btn btn-ghost btn-sm" onClick={() => { if (newName.trim()) { setWho(newName.trim()); setNewName(""); } }}>この名前で回答</button>
           </span>
         </div>
-        {who && <div className="text-xs mt-3 mono muted">回答者: <b style={{ color: "var(--ink)" }}>{who}</b>{existing ? " ・ 保存済みの回答を編集しています" : ""}</div>}
       </div>
 
       {who && (
         <>
           <div className="card p-4">
             <div className="flex items-center justify-between mb-3">
-              <span className="fld" style={{ margin: 0 }}>候補日時に回答（{done}/{cands.length}）</span>
-              <span className="flex gap-1">
-                <button className="btn btn-quiet btn-sm" onClick={() => setAll("ok")}>全部 ○</button>
-                <button className="btn btn-quiet btn-sm" onClick={() => setAll("ng")}>全部 ×</button>
-              </span>
+              <div className="eyebrow" style={{ margin: 0 }}>STEP2：候補日時から参加可否を回答してください（{done}/{cands.length}）</div>
+              <span className="text-xs muted">全員の状況を見ながら、自分の列を埋めてください</span>
             </div>
-            <div className="grid gap-2">
-              {cands.map((c) => (
-                <div key={c.id} className="flex flex-wrap items-center gap-2 py-2" style={{ borderTop: "1px solid var(--line2)" }}>
-                  <div style={{ minWidth: 170 }}>
-                    <div className="mono text-sm font-bold">{fmtMD(c.date)}({dow(c.date)}) {c.start}–{c.end}</div>
-                    {conflicts[c.id] && (
-                      <div className="text-xs flex items-center gap-1" style={{ color: "var(--mb)" }}>
-                        <AlertTriangle size={11} />「{conflicts[c.id]}」と重なります
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex gap-1.5 flex-1" style={{ minWidth: 220 }}>
-                    {[["ok", "○ 参加"], ["mb", "△ 未定"], ["ng", "× 不可"]].map(([v, label]) => (
-                      <button key={v} className={`ans ${answers[c.id] === v ? "on-" + v : ""}`}
-                        onClick={() => setAnswers({ ...answers, [c.id]: v })} aria-pressed={answers[c.id] === v}>{label}</button>
+            {!cands.length ? (
+              <div className="muted text-sm">候補日時がありません。</div>
+            ) : (
+              <div className="grid-wrap">
+                <table className="grid">
+                  <thead>
+                    <tr>
+                      <th className="cell-date" style={{ textAlign: "left" }}>候補日時</th>
+                      {columns.map((name) => (
+                        <th key={name} className={name === who ? "you-col" : ""} style={{ minWidth: name === who ? 110 : 46 }}>
+                          <span className="name-v">{name === who ? `${name}（あなた）` : name}</span>
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {cands.map((c) => (
+                      <tr key={c.id}>
+                        <td className="cell-date">
+                          <div className="mono text-sm font-bold">{fmtMD(c.date)}({dow(c.date)}) {c.start}–{c.end}</div>
+                          <ConsensusBar t={tally({ ...m, responses: { ...m.responses, [who]: { name: who, answers } } }, c)} />
+                        </td>
+                        {columns.map((name) => {
+                          if (name === who) {
+                            return (
+                              <td key={name} className="you-col">
+                                <div className="flex gap-1 justify-center">
+                                  {[["ok", "○"], ["mb", "△"], ["ng", "×"]].map(([v, label]) => (
+                                    <button key={v} type="button" className={`ans-mini ${answers[c.id] === v ? "on-" + v : ""}`}
+                                      onClick={() => setAnswer(c.id, v)} aria-label={label}>{label}</button>
+                                  ))}
+                                </div>
+                              </td>
+                            );
+                          }
+                          const a = m.responses?.[name]?.answers?.[c.id];
+                          const cls = a === "ok" ? "m-ok" : a === "mb" ? "m-mb" : a === "ng" ? "m-ng" : "m-na";
+                          return <td key={name}><span className={`mark ${cls}`}>{a === "ok" ? "○" : a === "mb" ? "△" : a === "ng" ? "×" : "–"}</span></td>;
+                        })}
+                      </tr>
                     ))}
-                  </div>
-                </div>
-              ))}
-            </div>
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
 
           <div className="card p-4">
-            <label className="fld">主催者候補が合わないとき — 自分が入れる日時を提案（任意・3件まで）</label>
-            <p className="text-xs muted mb-3" style={{ marginTop: -2 }}>提案した日時は主催者が候補に載せると、みんなで再集計できます。時刻は30分単位です。</p>
+            <div className="eyebrow mb-2">STEP3：候補日時すべてNGの場合、調整可能な日時候補をご共有ください</div>
+            <p className="text-xs muted mb-3">任意・3件まで。時刻は30分単位です。{allNg ? " すべての候補が不可になっています。" : ""}</p>
             <div className="grid gap-2">
               {props.map((p, i) => (
                 <div key={i} className="flex flex-wrap gap-2 items-center">
@@ -899,11 +928,6 @@ function Respond({ m, me, setMe, mutate, say, others }) {
             </div>
           </div>
 
-          <div className="card p-4">
-            <label className="fld">コメント（任意）</label>
-            <textarea rows={2} value={comment} onChange={(e) => setComment(e.target.value)} placeholder="例）前半は別件があるので、後半なら確実です" />
-          </div>
-
           <div className="flex gap-2">
             <button className="btn btn-primary" onClick={save}><Check size={15} />回答を保存する</button>
             {existing && <button className="btn btn-ghost" onClick={() => mutate((mm) => { const r = { ...mm.responses }; delete r[who]; return { ...mm, responses: r }; }, "回答を取り消しました")}>回答を取り消す</button>}
@@ -914,10 +938,9 @@ function Respond({ m, me, setMe, mutate, say, others }) {
   );
 }
 
-/* ---------------- 集計・確定 ---------------- */
-function Result({ m, mutate, say, others }) {
+/* ---------------- 集計 ---------------- */
+function Result({ m, mutate }) {
   const [order, setOrder] = useState("score");
-  const [pick, setPick] = useState(m.decided?.candidateId || bestOf(m)?.c.id || "");
   const responders = Object.values(m.responses || {}).sort((a, b) => a.updatedAt - b.updatedAt);
   const rows = useMemo(() => {
     const list = m.candidates.map((c) => ({ c, t: tally(m, c) }));
@@ -929,29 +952,6 @@ function Result({ m, mutate, say, others }) {
   const pendingProps = proposals.filter((p) => !m.candidates.some((c) => c.date === p.date && c.start === p.start && c.end === p.end));
   const pendingUnique = new Set(pendingProps.map((p) => `${p.date}|${p.start}|${p.end}`)).size;
   const weak = best && (best.t.blocked.length > 0 || best.t.ok < Math.ceil((best.t.total || 1) * 0.5));
-  const cand = m.candidates.find((c) => c.id === pick) || best?.c || null;
-  const text = cand ? announceText(m, cand) : "";
-
-  useEffect(() => {
-    if (m.decided?.candidateId) setPick(m.decided.candidateId);
-    else if (best?.c?.id && !pick) setPick(best.c.id);
-  }, [m.decided?.candidateId, best?.c?.id]); // eslint-disable-line
-
-  const overlap = useMemo(() => {
-    if (!cand) return [];
-    return others.filter((o) => {
-      if (!o.decided) return false;
-      const c = o.candidates.find((x) => x.id === o.decided.candidateId);
-      if (!c || c.date !== cand.date) return false;
-      const shared = o.participants.some((p) => m.participants.some((q) => q.name === p.name));
-      return shared && mins(cand.start) < mins(c.end) && mins(c.start) < mins(cand.end);
-    }).map((o) => o.title);
-  }, [pick, others, m, cand]); // eslint-disable-line
-
-  const copyText = async () => {
-    try { await navigator.clipboard.writeText(text); say("確定連絡文をコピーしました"); }
-    catch { say("コピーできませんでした"); }
-  };
 
   if (!m.candidates.length) return <div className="card p-8 text-center muted">候補日時がありません。設定タブで追加してください。</div>;
 
@@ -959,30 +959,18 @@ function Result({ m, mutate, say, others }) {
     <div className="grid gap-4">
       {best && (
         <div className="card p-5">
-          <div className="flex flex-wrap items-center gap-4 justify-between">
-            <div>
-              <div className="eyebrow mb-1">{best.t.blocked.length ? "現時点の最有力（要調整）" : "現時点の最有力"}</div>
-              <div className="mono font-bold" style={{ fontSize: 22 }}>{fmtFull(best.c.date)} {best.c.start}–{best.c.end}</div>
-              <div className="text-sm mt-1">
-                <b style={{ color: "var(--ok)" }}>○ {best.t.ok}</b>
-                <span className="muted"> ・ △ {best.t.mb} ・ × {best.t.ng} ・ 未回答 {best.t.none}</span>
-              </div>
-              {best.t.blocked.length > 0 && (
-                <div className="text-xs mt-1 flex items-center gap-1" style={{ color: "var(--ng)" }}>
-                  <AlertTriangle size={12} />必須参加者（{best.t.blocked.join("、")}）が参加できません
-                </div>
-              )}
-            </div>
-            {!m.decided && (
-              <button className="btn btn-primary" onClick={() => {
-                setPick(best.c.id);
-                mutate((mm) => ({ ...mm, decided: { candidateId: best.c.id, at: Date.now() } }), "日程を確定しました");
-              }}>
-                <Check size={15} />この日時で確定する
-              </button>
-            )}
+          <div className="eyebrow mb-1">{best.t.blocked.length ? "現時点の最有力（要調整）" : "現時点の最有力"}</div>
+          <div className="mono font-bold" style={{ fontSize: 22 }}>{fmtFull(best.c.date)} {best.c.start}–{best.c.end}</div>
+          <div className="text-sm mt-1">
+            <b style={{ color: "var(--ok)" }}>○ {best.t.ok}</b>
+            <span className="muted"> ・ △ {best.t.mb} ・ × {best.t.ng} ・ 未回答 {best.t.none}</span>
           </div>
-          <div style={{ maxWidth: 420 }}><ConsensusBar t={best.t} /></div>
+          {best.t.blocked.length > 0 && (
+            <div className="text-xs mt-1 flex items-center gap-1" style={{ color: "var(--ng)" }}>
+              <AlertTriangle size={12} />必須参加者（{best.t.blocked.join("、")}）が参加できません
+            </div>
+          )}
+          <div style={{ maxWidth: 420 }} className="mt-2"><ConsensusBar t={best.t} /></div>
         </div>
       )}
 
@@ -993,7 +981,7 @@ function Result({ m, mutate, say, others }) {
             <div>
               <div className="font-bold text-sm">主催者の候補だけでは決まりにくそうです</div>
               <p className="text-xs mt-1" style={{ color: "var(--ink2)" }}>
-                上の出欠入力で代替日時を提案してもらい、下の「参加者からの追加候補」から候補に載せると再集計できます。
+                回答タブで代替日時を提案してもらい、下の追加候補から候補に載せると再集計できます。
               </p>
             </div>
           </div>
@@ -1018,62 +1006,25 @@ function Result({ m, mutate, say, others }) {
             </tr>
           </thead>
           <tbody>
-            {rows.map(({ c, t }) => {
-              const selected = pick === c.id;
-              return (
-                <tr key={c.id} className={best && c.id === best.c.id ? "best" : ""}>
-                  <td className="cell-date">
-                    <button type="button" onClick={() => setPick(c.id)}
-                      className="flex items-center gap-2 text-left w-full"
-                      style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "inherit" }}>
-                      <CircleDot size={14} style={{ color: selected ? "var(--ink)" : "var(--line)", flexShrink: 0 }} />
-                      <div>
-                        <div className="mono text-sm font-bold">{fmtMD(c.date)}({dow(c.date)}) {c.start}–{c.end}</div>
-                        <ConsensusBar t={t} />
-                        {t.blocked.length > 0 && <div className="text-xs mt-1" style={{ color: "var(--ng)" }}>要調整: {t.blocked.join("、")}</div>}
-                      </div>
-                    </button>
-                  </td>
-                  <td className="mono text-xs">
-                    <b style={{ color: "var(--ok)" }}>{t.ok}</b> / <span style={{ color: "var(--mb)" }}>{t.mb}</span> / <span style={{ color: "var(--ng)" }}>{t.ng}</span>
-                  </td>
-                  {responders.map((r) => {
-                    const a = r.answers?.[c.id];
-                    const cls = a === "ok" ? "m-ok" : a === "mb" ? "m-mb" : a === "ng" ? "m-ng" : "m-na";
-                    return <td key={r.name}><span className={`mark ${cls}`}>{a === "ok" ? "○" : a === "mb" ? "△" : a === "ng" ? "×" : "–"}</span></td>;
-                  })}
-                </tr>
-              );
-            })}
+            {rows.map(({ c, t }) => (
+              <tr key={c.id} className={best && c.id === best.c.id ? "best" : ""}>
+                <td className="cell-date">
+                  <div className="mono text-sm font-bold">{fmtMD(c.date)}({dow(c.date)}) {c.start}–{c.end}</div>
+                  <ConsensusBar t={t} />
+                  {t.blocked.length > 0 && <div className="text-xs mt-1" style={{ color: "var(--ng)" }}>要調整: {t.blocked.join("、")}</div>}
+                </td>
+                <td className="mono text-xs">
+                  <b style={{ color: "var(--ok)" }}>{t.ok}</b> / <span style={{ color: "var(--mb)" }}>{t.mb}</span> / <span style={{ color: "var(--ng)" }}>{t.ng}</span>
+                </td>
+                {responders.map((r) => {
+                  const a = r.answers?.[c.id];
+                  const cls = a === "ok" ? "m-ok" : a === "mb" ? "m-mb" : a === "ng" ? "m-ng" : "m-na";
+                  return <td key={r.name}><span className={`mark ${cls}`}>{a === "ok" ? "○" : a === "mb" ? "△" : a === "ng" ? "×" : "–"}</span></td>;
+                })}
+              </tr>
+            ))}
           </tbody>
         </table>
-      </div>
-
-      {overlap.length > 0 && cand && (
-        <div className="card p-3 text-sm flex items-start gap-2" style={{ background: "var(--mbbg)", color: "var(--mb)" }}>
-          <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 2 }} />
-          <span>選択中の時間は、同じメンバーがいる「{overlap.join("」「")}」と重なっています。</span>
-        </div>
-      )}
-
-      <div className="card p-5">
-        <div className="eyebrow mb-3">日程を確定する</div>
-        <div className="flex flex-wrap gap-2 items-center mb-3">
-          <button className="btn btn-primary" disabled={!cand}
-            onClick={() => mutate((mm) => ({ ...mm, decided: { candidateId: pick || cand.id, at: Date.now() } }), "日程を確定しました")}>
-            <Check size={15} />選択した日時で確定する
-          </button>
-          {m.decided && <button className="btn btn-ghost" onClick={() => mutate((mm) => ({ ...mm, decided: null }), "確定を取り消しました")}>確定を取り消す</button>}
-        </div>
-        {cand && (
-          <>
-            <div className="text-xs muted mb-2">選択中: <span className="mono font-bold" style={{ color: "var(--ink)" }}>{fmtFull(cand.date)} {cand.start}–{cand.end}</span></div>
-            <pre className="p-3 text-xs" style={{ background: "#F5F8FA", borderRadius: 10, whiteSpace: "pre-wrap", fontFamily: "'Noto Sans JP',sans-serif", lineHeight: 1.8 }}>
-              {text}
-            </pre>
-            <button className="btn btn-ghost mt-3" onClick={copyText}><Copy size={15} />確定連絡文をコピー</button>
-          </>
-        )}
       </div>
 
       {noAnswer.length > 0 && (
@@ -1094,15 +1045,15 @@ function Result({ m, mutate, say, others }) {
               onClick={() => mutate((mm) => absorbProposals(mm, pendingProps).next,
                 pendingUnique === 1
                   ? "候補に追加しました。表で再集計できます"
-                  : `${pendingUnique}件を候補に追加しました。未回答の人に再回答を依頼してください`)}
+                  : `${pendingUnique}件を候補に追加しました`)}
             >
               <Plus size={13} />未追加をすべて候補にして再集計（{pendingUnique}）
             </button>
           )}
         </div>
-        <p className="text-xs muted mb-3">候補に載せると上の集計表に行が増えます。提案者には自動で ○ が入ります。ほかの人は上の出欠で再回答してください。</p>
+        <p className="text-xs muted mb-3">候補に載せると集計表に行が増えます。提案者には自動で ○ が入ります。</p>
         {proposals.length === 0 ? (
-          <div className="text-sm muted">まだ提案はありません。参加者に代替日時の提案を依頼すると、ここに集まります。</div>
+          <div className="text-sm muted">まだ提案はありません。</div>
         ) : (
           <div className="grid gap-2">
             {proposals.map((p, i) => {
@@ -1111,7 +1062,7 @@ function Result({ m, mutate, say, others }) {
                 <div key={i} className="flex flex-wrap items-center gap-2 justify-between py-1.5" style={{ borderTop: i ? "1px solid var(--line2)" : "none" }}>
                   <span className="mono text-sm">{fmtMD(p.date)}({dow(p.date)}) {p.start}–{p.end} <span className="muted" style={{ fontFamily: "'Noto Sans JP',sans-serif" }}>／ {p.by} さん</span></span>
                   <button className="btn btn-ghost btn-sm" disabled={dup}
-                    onClick={() => mutate((mm) => absorbProposals(mm, [p]).next, "候補に追加しました。表で再集計できます")}>
+                    onClick={() => mutate((mm) => absorbProposals(mm, [p]).next, "候補に追加しました")}>
                     {dup ? "追加済み" : <><Plus size={13} />候補に追加</>}
                   </button>
                 </div>
@@ -1138,11 +1089,87 @@ function Result({ m, mutate, say, others }) {
   );
 }
 
+/* ---------------- 確定 ---------------- */
+function FixAndShare({ m, mutate, say, others }) {
+  const [pick, setPick] = useState(m.decided?.candidateId || bestOf(m)?.c.id || "");
+  const cand = m.candidates.find((c) => c.id === pick) || bestOf(m)?.c || null;
+  const text = cand ? announceText(m, cand) : "";
+
+  useEffect(() => {
+    if (m.decided?.candidateId) setPick(m.decided.candidateId);
+  }, [m.decided?.candidateId]);
+
+  const overlap = useMemo(() => {
+    if (!cand) return [];
+    return others.filter((o) => {
+      if (!o.decided) return false;
+      const c = o.candidates.find((x) => x.id === o.decided.candidateId);
+      if (!c || c.date !== cand.date) return false;
+      const shared = o.participants.some((p) => m.participants.some((q) => q.name === p.name));
+      return shared && mins(cand.start) < mins(c.end) && mins(c.start) < mins(cand.end);
+    }).map((o) => o.title);
+  }, [pick, others, m, cand]); // eslint-disable-line
+
+  const copyText = async () => {
+    try { await navigator.clipboard.writeText(text); say("確定連絡文をコピーしました"); }
+    catch { say("コピーできませんでした"); }
+  };
+
+  if (!m.candidates.length) return <div className="card p-8 text-center muted">候補日時がありません。</div>;
+
+  return (
+    <div className="grid gap-4">
+      <div className="card p-5">
+        <div className="eyebrow mb-3">日時を選んで確定する</div>
+        <div className="grid gap-1.5">
+          {[...m.candidates].sort(sortCands).map((c) => {
+            const tt = tally(m, c);
+            const on = pick === c.id;
+            return (
+              <button key={c.id} onClick={() => setPick(c.id)}
+                className="flex flex-wrap items-center gap-3 p-3 text-left"
+                style={{ border: `1px solid ${on ? "var(--ink)" : "var(--line)"}`, borderRadius: 12, background: on ? "#F7F9FB" : "#fff", cursor: "pointer" }}>
+                <CircleDot size={16} style={{ color: on ? "var(--ink)" : "var(--line)" }} />
+                <span className="mono font-bold text-sm">{fmtMD(c.date)}({dow(c.date)}) {c.start}–{c.end}</span>
+                <span className="text-xs muted mono">○{tt.ok} △{tt.mb} ×{tt.ng}</span>
+                <span style={{ flex: 1, minWidth: 90, maxWidth: 200 }}><ConsensusBar t={tt} /></span>
+                {tt.blocked.length > 0 && <span className="pill pill-warn">要調整</span>}
+              </button>
+            );
+          })}
+        </div>
+        {overlap.length > 0 && (
+          <div className="mt-3 p-3 text-sm flex items-start gap-2" style={{ background: "var(--mbbg)", color: "var(--mb)", borderRadius: 10 }}>
+            <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 2 }} />
+            <span>この時間は、同じメンバーがいる「{overlap.join("」「")}」と重なっています。</span>
+          </div>
+        )}
+        <div className="flex flex-wrap gap-2 mt-4">
+          <button className="btn btn-primary" disabled={!cand}
+            onClick={() => mutate((mm) => ({ ...mm, decided: { candidateId: pick || cand.id, at: Date.now() } }), "日程を確定しました")}>
+            <Check size={15} />この日時で確定する
+          </button>
+          {m.decided && <button className="btn btn-ghost" onClick={() => mutate((mm) => ({ ...mm, decided: null }), "確定を取り消しました")}>確定を取り消す</button>}
+        </div>
+      </div>
+
+      {cand && (
+        <div className="card p-5">
+          <div className="eyebrow mb-3">確定連絡文</div>
+          <pre className="p-3 text-xs" style={{ background: "#F5F8FA", borderRadius: 10, whiteSpace: "pre-wrap", fontFamily: "'Noto Sans JP',sans-serif", lineHeight: 1.8 }}>
+            {text}
+          </pre>
+          <button className="btn btn-primary mt-3" onClick={copyText}><Copy size={15} />テキストをコピー</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---------------- 設定 ---------------- */
 function Setting({ m, mutate, onDelete, onCopy }) {
   const [title, setTitle] = useState(m.title);
   const [purpose, setPurpose] = useState(m.purpose);
-  const [deadline, setDeadline] = useState(m.deadline || "");
   const [nameInput, setNameInput] = useState("");
   const [nd, setNd] = useState(todayISO());
   const [ns, setNs] = useState("10:00");
@@ -1156,9 +1183,8 @@ function Setting({ m, mutate, onDelete, onCopy }) {
         <div className="grid gap-3">
           <Field label="会議名"><input type="text" value={title} onChange={(e) => setTitle(e.target.value)} /></Field>
           <Field label="議題・目的"><textarea rows={3} value={purpose} onChange={(e) => setPurpose(e.target.value)} /></Field>
-          <Field label="回答の締切"><input type="date" value={deadline} onChange={(e) => setDeadline(e.target.value)} /></Field>
           <button className="btn btn-primary" style={{ justifySelf: "flex-start" }}
-            onClick={() => mutate((mm) => ({ ...mm, title: title.trim() || mm.title, purpose: purpose.trim(), deadline }), "内容を更新しました")}>変更を保存</button>
+            onClick={() => mutate((mm) => ({ ...mm, title: title.trim() || mm.title, purpose: purpose.trim() }), "内容を更新しました")}>変更を保存</button>
         </div>
       </div>
 
