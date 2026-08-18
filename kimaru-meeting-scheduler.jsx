@@ -215,6 +215,8 @@ function rememberPastNames(names) {
 }
 
 const HOSTED_KEY = "kimaru_hosted_ids_v1";
+const HOST_TOKENS_KEY = "kimaru_host_tokens_v1";
+
 function loadHostedIds() {
   try { return JSON.parse(localStorage.getItem(HOSTED_KEY) || "[]"); } catch { return []; }
 }
@@ -222,13 +224,37 @@ function markHosted(id) {
   const ids = loadHostedIds();
   if (!ids.includes(id)) localStorage.setItem(HOSTED_KEY, JSON.stringify([id, ...ids]));
 }
-function isHosted(id) {
-  return loadHostedIds().includes(id);
+function loadHostTokens() {
+  try { return JSON.parse(localStorage.getItem(HOST_TOKENS_KEY) || "{}"); } catch { return {}; }
+}
+function rememberHostToken(id, token) {
+  if (!id || !token) return;
+  const map = loadHostTokens();
+  map[id] = token;
+  localStorage.setItem(HOST_TOKENS_KEY, JSON.stringify(map));
+  markHosted(id);
+}
+function checkIsHost(m) {
+  if (!m?.id) return false;
+  try {
+    const urlHost = new URLSearchParams(window.location.search).get("host");
+    if (m.hostToken && urlHost && urlHost === m.hostToken) {
+      rememberHostToken(m.id, m.hostToken);
+      return true;
+    }
+  } catch { /* noop */ }
+  if (m.hostToken && loadHostTokens()[m.id] === m.hostToken) return true;
+  if (loadHostedIds().includes(m.id)) return true;
+  return false;
 }
 
-function inviteUrlFor(id) {
-  if (typeof window === "undefined") return `?m=${id}`;
-  return `${window.location.origin}${window.location.pathname}?m=${id}`;
+function inviteUrlFor(id, hostToken) {
+  if (typeof window === "undefined") return hostToken ? `?m=${id}&host=${hostToken}` : `?m=${id}`;
+  const url = new URL(window.location.href);
+  url.search = "";
+  url.searchParams.set("m", id);
+  if (hostToken) url.searchParams.set("host", hostToken);
+  return url.toString();
 }
 
 /* 集計 */
@@ -391,16 +417,20 @@ export default function App() {
   }, [board, putMeeting, say]);
 
   const openMeeting = (id, tab = "respond") => {
-    const t = ["respond", "result", "fix", "setting"].includes(tab) ? tab : "respond";
+    const t = ["respond", "result", "setting"].includes(tab) ? tab : "respond";
     setView({ name: "meeting", id, tab: t });
     const url = new URL(window.location.href);
     url.searchParams.set("m", id);
+    const hostTok = loadHostTokens()[id];
+    if (hostTok) url.searchParams.set("host", hostTok);
+    else url.searchParams.delete("host");
     window.history.replaceState({}, "", url);
   };
   const goHome = () => {
     setView({ name: "home" });
     const url = new URL(window.location.href);
     url.searchParams.delete("m");
+    url.searchParams.delete("host");
     window.history.replaceState({}, "", url);
   };
 
@@ -466,7 +496,8 @@ export default function App() {
               rememberPastNames(m.participants.map((p) => p.name));
               await upsertMeeting(m);
               putMeeting(m);
-              markHosted(m.id);
+              if (m.hostToken) rememberHostToken(m.id, m.hostToken);
+              else markHosted(m.id);
               say("調整リンクを発行しました");
               return m;
             }}
@@ -475,7 +506,6 @@ export default function App() {
         )}
         {view.name === "meeting" && current && (
           <MeetingView m={current} me={me} setMe={saveMe} say={say}
-            isHost={isHosted(current.id)}
             tab={["respond", "result", "setting"].includes(view.tab) ? view.tab : "respond"}
             setTab={(t) => setView({ ...view, tab: t })}
             onBack={goHome}
@@ -647,9 +677,10 @@ function NewMeeting({ onCancel, onCreate, onOpenMeeting, pastNames, allMeetings,
         id: uid(), title: title.trim(), purpose: purpose.trim(), organizer: "",
         deadline: "", participants: names, candidates: [...cands].sort(sortCands),
         responses: {}, decided: null, meetingUrl: "", createdAt: Date.now(),
+        hostToken: uid() + uid(),
       };
       await onCreate(m);
-      setIssued({ id: m.id, title: m.title });
+      setIssued({ id: m.id, title: m.title, hostToken: m.hostToken });
     } catch (e) {
       console.error(e);
       setErr("発行に失敗しました。もう一度お試しください。");
@@ -803,10 +834,39 @@ function NewMeeting({ onCancel, onCreate, onOpenMeeting, pastNames, allMeetings,
 }
 
 /* ---------------- meeting view ---------------- */
-function MeetingView({ m, me, setMe, tab, setTab, onBack, mutate, onDelete, onCopy, say, others, isHost }) {
+function MeetingView({ m, me, setMe, tab, setTab, onBack, mutate, onDelete, onCopy, say, others }) {
+  const [host, setHost] = useState(() => checkIsHost(m));
+  const [claiming, setClaiming] = useState(false);
   const dec = m.decided ? m.candidates.find((c) => c.id === m.decided.candidateId) : null;
   const hostTabs = [["respond", "回答"], ["result", "集計・確定"], ["setting", "設定"]];
-  const safeTab = isHost ? (hostTabs.some(([k]) => k === tab) ? tab : "respond") : "respond";
+  const safeTab = host ? (hostTabs.some(([k]) => k === tab) ? tab : "respond") : "respond";
+
+  useEffect(() => {
+    setHost(checkIsHost(m));
+  }, [m.id, m.hostToken]);
+
+  const enableHostMenu = async () => {
+    if (checkIsHost(m)) { setHost(true); return; }
+    if (m.hostToken) {
+      say("この端末は主催者として登録されていません。発行したブラウザで開くか、新しい会議を発行してください。");
+      return;
+    }
+    setClaiming(true);
+    try {
+      const token = uid() + uid();
+      const updated = await mutate((mm) => ({ ...mm, hostToken: token }), "主催者メニューを表示しました");
+      if (updated) {
+        rememberHostToken(m.id, token);
+        setHost(true);
+        const url = new URL(window.location.href);
+        url.searchParams.set("host", token);
+        window.history.replaceState({}, "", url);
+        setTab("result");
+      }
+    } finally {
+      setClaiming(false);
+    }
+  };
 
   return (
     <div className="py-7">
@@ -818,7 +878,15 @@ function MeetingView({ m, me, setMe, tab, setTab, onBack, mutate, onDelete, onCo
             参加予定 {m.participants.length}名 ・ 回答 {Object.keys(m.responses || {}).length}名
           </div>
         </div>
-        <span className={m.decided ? "pill pill-fixed" : "pill pill-open"}>{m.decided ? "日程確定" : "回答受付中"}</span>
+        <div className="flex flex-wrap items-center gap-2">
+          {!host && (
+            <button className="btn btn-ghost btn-sm" onClick={enableHostMenu} disabled={claiming}>
+              {claiming ? <Loader2 size={13} className="animate-spin" /> : null}
+              主催者メニューを表示
+            </button>
+          )}
+          <span className={m.decided ? "pill pill-fixed" : "pill pill-open"}>{m.decided ? "日程確定" : "回答受付中"}</span>
+        </div>
       </div>
       {m.purpose && <p className="muted mt-3 text-sm" style={{ maxWidth: 640 }}>{m.purpose}</p>}
 
@@ -829,18 +897,18 @@ function MeetingView({ m, me, setMe, tab, setTab, onBack, mutate, onDelete, onCo
         </div>
       )}
 
-      {isHost && (
+      {host && (
         <div className="flex gap-5 mt-5 mb-5" style={{ borderBottom: "1px solid var(--line)" }}>
           {hostTabs.map(([k, label]) => (
             <button key={k} className={`tab ${safeTab === k ? "on" : ""}`} onClick={() => setTab(k)}>{label}</button>
           ))}
         </div>
       )}
-      {!isHost && <div className="mt-5 mb-5" />}
+      {!host && <div className="mt-5 mb-5" />}
 
       {safeTab === "respond" && <Respond m={m} me={me} setMe={setMe} mutate={mutate} say={say} />}
-      {isHost && safeTab === "result" && <Result m={m} mutate={mutate} say={say} others={others} />}
-      {isHost && safeTab === "setting" && <Setting m={m} mutate={mutate} onDelete={onDelete} onCopy={onCopy} />}
+      {host && safeTab === "result" && <Result m={m} mutate={mutate} say={say} others={others} />}
+      {host && safeTab === "setting" && <Setting m={m} mutate={mutate} onDelete={onDelete} onCopy={onCopy} />}
     </div>
   );
 }
