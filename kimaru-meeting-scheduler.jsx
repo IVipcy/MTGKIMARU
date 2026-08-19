@@ -204,6 +204,7 @@ function absorbProposals(mm, items) {
 
 const ME_LOCAL = ME_KEY;
 const PAST_NAMES_KEY = "kimaru_past_names_v1";
+const COORD_TOKENS_KEY = "kimaru_coord_tokens_v1";
 
 function loadPastNames() {
   try { return JSON.parse(localStorage.getItem(PAST_NAMES_KEY) || "[]"); } catch { return []; }
@@ -217,11 +218,42 @@ function rememberPastNames(names) {
   return savePastNames([...loadPastNames(), ...names]);
 }
 
+function loadCoordTokens() {
+  try { return JSON.parse(localStorage.getItem(COORD_TOKENS_KEY) || "{}"); } catch { return {}; }
+}
+function rememberCoordToken(id, token) {
+  if (!id || !token) return;
+  const map = loadCoordTokens();
+  map[id] = token;
+  localStorage.setItem(COORD_TOKENS_KEY, JSON.stringify(map));
+}
+function hasCoordAccess(m) {
+  if (!m?.id) return false;
+  // 旧データ（トークンなし）は、自分が一覧に持っている会議だけ調整者として扱える
+  if (!m.coordToken) return getMyIds().includes(m.id);
+  try {
+    const urlTok = new URLSearchParams(window.location.search).get("c");
+    if (urlTok && urlTok === m.coordToken) {
+      rememberCoordToken(m.id, m.coordToken);
+      return true;
+    }
+  } catch { /* noop */ }
+  return loadCoordTokens()[m.id] === m.coordToken;
+}
+
 function inviteUrlFor(id) {
   if (typeof window === "undefined") return `?m=${id}`;
   const url = new URL(window.location.href);
   url.search = "";
   url.searchParams.set("m", id);
+  return url.toString();
+}
+function coordUrlFor(id, token) {
+  if (typeof window === "undefined") return `?m=${id}&c=${token}`;
+  const url = new URL(window.location.href);
+  url.search = "";
+  url.searchParams.set("m", id);
+  if (token) url.searchParams.set("c", token);
   return url.toString();
 }
 
@@ -344,6 +376,7 @@ export default function App() {
       } catch { /* noop */ }
 
       const mid = new URLSearchParams(window.location.search).get("m");
+      const cTok = new URLSearchParams(window.location.search).get("c");
       const owned = mid ? getMyIds().includes(mid) : false;
       if (mid && !owned) setInviteGuest(true);
 
@@ -359,6 +392,11 @@ export default function App() {
         const list = [...meetings];
         if (inviteMeeting && !list.some((m) => m.id === inviteMeeting.id)) {
           list.unshift(inviteMeeting);
+        }
+        // 調整者用リンクのトークンをこの端末に記憶
+        const opened = mid ? list.find((m) => m.id === mid) : null;
+        if (opened?.coordToken && cTok && cTok === opened.coordToken) {
+          rememberCoordToken(opened.id, opened.coordToken);
         }
         setBoard({ meetings: list });
         setBootError(error);
@@ -404,13 +442,16 @@ export default function App() {
     }
   }, [board, putMeeting, say]);
 
-  const openMeeting = (id, tab = "respond") => {
+  const openMeeting = (id, tab = "respond", opts = {}) => {
     const t = ["respond", "result", "setting"].includes(tab) ? tab : "respond";
     setInviteGuest(false);
     setView({ name: "meeting", id, tab: t });
     const url = new URL(window.location.href);
     url.searchParams.set("m", id);
     url.searchParams.delete("host");
+    const token = opts.coordToken || loadCoordTokens()[id];
+    if (token) url.searchParams.set("c", token);
+    else url.searchParams.delete("c");
     window.history.replaceState({}, "", url);
   };
   const goHome = () => {
@@ -419,6 +460,7 @@ export default function App() {
     const url = new URL(window.location.href);
     url.searchParams.delete("m");
     url.searchParams.delete("host");
+    url.searchParams.delete("c");
     window.history.replaceState({}, "", url);
   };
 
@@ -492,11 +534,12 @@ export default function App() {
               rememberPastNames(m.participants.map((p) => p.name));
               await upsertMeeting(m);
               rememberId(m.id);
+              if (m.coordToken) rememberCoordToken(m.id, m.coordToken);
               putMeeting(m);
               say("調整リンクを発行しました");
               return m;
             }}
-            onOpenMeeting={(id) => openMeeting(id, "respond")}
+            onOpenMeeting={(id, opts) => openMeeting(id, "respond", opts)}
             base={view.copyFrom ? meetings.find((x) => x.id === view.copyFrom) : null} />
         )}
         {view.name === "meeting" && current && (
@@ -708,14 +751,16 @@ function NewMeeting({ onCancel, onCreate, onOpenMeeting, pastNames, allMeetings,
     if (!cands.length) { setErr("候補日時を1つ以上つくってください。"); return; }
     setBusy(true); setErr("");
     try {
+      const coordToken = uid() + uid();
       const m = {
         id: uid(), title: title.trim(), purpose: purpose.trim(), organizer: "",
         deadline: "", participants: names.map((p) => ({ ...p, coordinator: Boolean(p.coordinator) })),
         candidates: [...cands].sort(sortCands),
         responses: {}, decided: null, meetingUrl: "", createdAt: Date.now(),
+        coordToken,
       };
       await onCreate(m);
-      setIssued({ id: m.id, title: m.title });
+      setIssued({ id: m.id, title: m.title, coordToken });
     } catch (e) {
       console.error(e);
       setErr("発行に失敗しました。もう一度お試しください。");
@@ -726,23 +771,31 @@ function NewMeeting({ onCancel, onCreate, onOpenMeeting, pastNames, allMeetings,
 
   if (issued) {
     const url = inviteUrlFor(issued.id);
-    const copy = async () => {
+    const cUrl = coordUrlFor(issued.id, issued.coordToken);
+    const copy = async (text, okMsg) => {
       try {
-        await navigator.clipboard.writeText(url);
-        say?.("調整リンクをコピーしました。参加者に手動で送ってください");
+        await navigator.clipboard.writeText(text);
+        say?.(okMsg);
       } catch { say?.("コピーできませんでした"); }
     };
     return (
       <div className="py-7">
         <h1 style={{ fontSize: 24 }} className="mb-2">調整リンクを発行しました</h1>
-        <p className="muted text-sm mb-5">このリンクを参加者へ手動で送付してください。</p>
+        <p className="muted text-sm mb-5">参加者には通常のリンクだけ送ってください。調整者用は本人だけが使います。</p>
         <div className="card p-5 mb-4" style={{ borderColor: "var(--acc)", background: "var(--accbg)" }}>
+          <div className="eyebrow mb-2" style={{ color: "var(--acc)" }}>参加者用リンク</div>
           <div className="font-bold mb-2">{issued.title}</div>
           <code className="mono text-xs block mb-3" style={{ wordBreak: "break-all" }}>{url}</code>
-          <button className="btn btn-primary" onClick={copy}><Copy size={15} />調整リンクをコピー</button>
+          <button className="btn btn-primary" onClick={() => copy(url, "参加者用リンクをコピーしました")}><Copy size={15} />参加者用をコピー</button>
+        </div>
+        <div className="card p-5 mb-4">
+          <div className="eyebrow mb-2">調整者用リンク（共有しない）</div>
+          <p className="text-xs muted mb-2">このリンクを開いた端末だけが、調整者名を選んで集計・確定／設定を使えます。</p>
+          <code className="mono text-xs block mb-3" style={{ wordBreak: "break-all" }}>{cUrl}</code>
+          <button className="btn btn-ghost" onClick={() => copy(cUrl, "調整者用リンクをコピーしました")}><Copy size={15} />調整者用をコピー</button>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button className="btn btn-ghost" onClick={() => onOpenMeeting(issued.id)}>会議ボードを開く</button>
+          <button className="btn btn-ghost" onClick={() => onOpenMeeting(issued.id, { coordToken: issued.coordToken })}>会議ボードを開く</button>
           <button className="btn btn-quiet" onClick={onCancel}>一覧へ戻る</button>
         </div>
       </div>
@@ -883,22 +936,52 @@ function NewMeeting({ onCancel, onCreate, onOpenMeeting, pastNames, allMeetings,
 
 /* ---------------- meeting view ---------------- */
 function MeetingView({ m, me, setMe, tab, setTab, onBack, mutate, onDelete, onCopy, say, others }) {
-  const [viewer, setViewer] = useState(me || "");
-  const host = isCoordinatorName(m, viewer);
+  const canCoord = hasCoordAccess(m);
+  const [viewer, setViewer] = useState(() => {
+    if (me && isCoordinatorName(m, me) && !hasCoordAccess(m)) return "";
+    return me || "";
+  });
+  const host = canCoord && isCoordinatorName(m, viewer);
   const dec = m.decided ? m.candidates.find((c) => c.id === m.decided.candidateId) : null;
   const hostTabs = [["respond", "回答"], ["result", "集計・確定"], ["setting", "設定"]];
   const safeTab = host ? (hostTabs.some(([k]) => k === tab) ? tab : "respond") : "respond";
   const coord = coordinatorOf(m);
 
+  // 旧会議にトークンが無い場合、一覧オーナーの端末で発行してこの端末に記憶
   useEffect(() => {
-    if (me && !viewer) setViewer(me);
+    if (!m?.id || m.coordToken || !getMyIds().includes(m.id)) return undefined;
+    let cancelled = false;
+    (async () => {
+      const token = uid() + uid();
+      const updated = await mutate((mm) => (mm.coordToken ? mm : { ...mm, coordToken: token }));
+      if (!cancelled && updated?.coordToken) rememberCoordToken(updated.id, updated.coordToken);
+    })();
+    return () => { cancelled = true; };
+  }, [m.id, m.coordToken]); // eslint-disable-line
+
+  useEffect(() => {
+    if (me && !viewer) {
+      if (isCoordinatorName(m, me) && !hasCoordAccess(m)) return;
+      setViewer(me);
+    }
   }, [me]); // eslint-disable-line
+
+  useEffect(() => {
+    if (isCoordinatorName(m, viewer) && !hasCoordAccess(m)) {
+      setViewer("");
+      setMe("");
+    }
+  }, [m.id, m.coordToken, canCoord]); // eslint-disable-line
 
   useEffect(() => {
     if (!host && tab !== "respond") setTab("respond");
   }, [host, tab, setTab]);
 
   const pickViewer = (name) => {
+    if (isCoordinatorName(m, name) && !hasCoordAccess(m)) {
+      say("調整者名は、調整者用リンクを開いた端末だけが選べます");
+      return;
+    }
     setViewer(name);
     setMe(name);
   };
@@ -935,16 +1018,16 @@ function MeetingView({ m, me, setMe, tab, setTab, onBack, mutate, onDelete, onCo
       {!host && <div className="mt-5 mb-5" />}
 
       {safeTab === "respond" && (
-        <Respond m={m} who={viewer} setWho={pickViewer} mutate={mutate} say={say} />
+        <Respond m={m} who={viewer} setWho={pickViewer} canCoord={canCoord} mutate={mutate} say={say} />
       )}
       {host && safeTab === "result" && <Result m={m} mutate={mutate} say={say} others={others} />}
-      {host && safeTab === "setting" && <Setting m={m} mutate={mutate} onDelete={onDelete} onCopy={onCopy} />}
+      {host && safeTab === "setting" && <Setting m={m} mutate={mutate} onDelete={onDelete} onCopy={onCopy} say={say} />}
     </div>
   );
 }
 
 /* ---------------- 出欠入力 ---------------- */
-function Respond({ m, who, setWho, mutate, say }) {
+function Respond({ m, who, setWho, canCoord, mutate, say }) {
   const [newName, setNewName] = useState("");
   const existing = m.responses?.[who];
   const [answers, setAnswers] = useState({});
@@ -968,8 +1051,22 @@ function Respond({ m, who, setWho, mutate, say }) {
 
   const setAnswer = (cid, v) => setAnswers((a) => ({ ...a, [cid]: v }));
 
+  const trySetWho = (name) => {
+    const n = (name || "").trim();
+    if (!n) return;
+    if (isCoordinatorName(m, n) && !canCoord) {
+      say("調整者名は、調整者用リンクを開いた端末だけが選べます");
+      return;
+    }
+    setWho(n);
+  };
+
   const save = async () => {
     if (!who) { say("名前を選んでください"); return; }
+    if (isCoordinatorName(m, who) && !canCoord) {
+      say("調整者名では回答できません");
+      return;
+    }
     if (!Object.keys(answers).length) { say("1つ以上の候補に回答してください"); return; }
     rememberPastNames([who]);
     await mutate((mm) => ({
@@ -995,18 +1092,36 @@ function Respond({ m, who, setWho, mutate, say }) {
       <div className="card p-4">
         <div className="eyebrow mb-3">STEP1：名前を選択してください</div>
         <div className="flex flex-wrap gap-2">
-          {m.participants.map((p) => (
-            <button key={p.id} className={`chipbtn ${who === p.name ? "on" : ""}`} style={{ fontFamily: "'Noto Sans JP',sans-serif" }} onClick={() => setWho(p.name)}>
-              {p.name}{p.coordinator ? "・調整者" : ""}{m.responses?.[p.name] ? " ✓" : ""}
-            </button>
-          ))}
+          {m.participants.map((p) => {
+            const locked = p.coordinator && !canCoord;
+            return (
+              <button
+                key={p.id}
+                type="button"
+                disabled={locked}
+                className={`chipbtn ${who === p.name ? "on" : ""}`}
+                style={{
+                  fontFamily: "'Noto Sans JP',sans-serif",
+                  opacity: locked ? 0.45 : 1,
+                  cursor: locked ? "not-allowed" : "pointer",
+                }}
+                title={locked ? "調整者用リンクを開いた端末だけが選べます" : undefined}
+                onClick={() => { if (!locked) trySetWho(p.name); }}
+              >
+                {p.name}{p.coordinator ? "・調整者" : ""}{m.responses?.[p.name] ? " ✓" : ""}
+              </button>
+            );
+          })}
           <span className="flex gap-1.5">
             <input type="text" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="リストにない場合" style={{ width: 150, padding: "5px 10px", borderRadius: 999 }}
-              onKeyDown={(e) => { if (e.key === "Enter" && newName.trim()) { setWho(newName.trim()); setNewName(""); } }} />
-            <button className="btn btn-ghost btn-sm" onClick={() => { if (newName.trim()) { setWho(newName.trim()); setNewName(""); } }}>この名前で回答</button>
+              onKeyDown={(e) => { if (e.key === "Enter" && newName.trim()) { trySetWho(newName); setNewName(""); } }} />
+            <button className="btn btn-ghost btn-sm" onClick={() => { if (newName.trim()) { trySetWho(newName); setNewName(""); } }}>この名前で回答</button>
           </span>
         </div>
-        {who && isCoordinatorName(m, who) && (
+        {!canCoord && coordinatorOf(m) && (
+          <div className="text-xs muted mt-3">調整者「{coordinatorOf(m).name}」は、調整者用リンクを開いた端末だけが選択できます。</div>
+        )}
+        {who && isCoordinatorName(m, who) && canCoord && (
           <div className="text-xs mt-3" style={{ color: "var(--acc)" }}>調整者として「集計・確定」「設定」タブが使えます。</div>
         )}
       </div>
@@ -1315,7 +1430,7 @@ function Result({ m, mutate, say, others }) {
 }
 
 /* ---------------- 設定 ---------------- */
-function Setting({ m, mutate, onDelete, onCopy }) {
+function Setting({ m, mutate, onDelete, onCopy, say }) {
   const [title, setTitle] = useState(m.title);
   const [purpose, setPurpose] = useState(m.purpose);
   const [nameInput, setNameInput] = useState("");
@@ -1323,6 +1438,14 @@ function Setting({ m, mutate, onDelete, onCopy }) {
   const [ns, setNs] = useState("10:00");
   const [ne, setNe] = useState("11:00");
   const [confirmDel, setConfirmDel] = useState(false);
+
+  const copyCoord = async () => {
+    if (!m.coordToken) { say?.("調整者用リンクがまだありません"); return; }
+    try {
+      await navigator.clipboard.writeText(coordUrlFor(m.id, m.coordToken));
+      say?.("調整者用リンクをコピーしました");
+    } catch { say?.("コピーできませんでした"); }
+  };
 
   return (
     <div className="grid gap-4">
@@ -1368,7 +1491,7 @@ function Setting({ m, mutate, onDelete, onCopy }) {
             </span>
           ))}
         </div>
-        <div className="text-xs muted mb-3">調整者は1人だけです。名前を選んで回答すると、調整者には集計・確定／設定タブが表示されます。</div>
+        <div className="text-xs muted mb-3">調整者は1人だけです。調整者名の選択には調整者用リンクが必要です。</div>
         <div className="flex gap-2">
           <input type="text" value={nameInput} onChange={(e) => setNameInput(e.target.value)} placeholder="名前を追加（カンマ区切り可）" />
           <button className="btn btn-ghost" onClick={() => {
@@ -1416,6 +1539,7 @@ function Setting({ m, mutate, onDelete, onCopy }) {
       <div className="card p-5">
         <div className="eyebrow mb-3">この会議を</div>
         <div className="flex flex-wrap gap-2">
+          <button className="btn btn-ghost" onClick={copyCoord}><Link2 size={15} />調整者用リンクをコピー</button>
           {onCopy && <button className="btn btn-ghost" onClick={onCopy}><Copy size={15} />同じ設定で複製する</button>}
           {onDelete && (confirmDel ? (
             <span className="flex gap-2 items-center">
@@ -1427,6 +1551,7 @@ function Setting({ m, mutate, onDelete, onCopy }) {
             <button className="btn btn-ghost" style={{ color: "var(--ng)" }} onClick={() => setConfirmDel(true)}><Trash2 size={15} />削除する</button>
           ))}
         </div>
+        <p className="text-xs muted mt-3">調整者用リンクは参加者に送らないでください。参加者には通常の招待リンクだけ送ります。</p>
       </div>
     </div>
   );
