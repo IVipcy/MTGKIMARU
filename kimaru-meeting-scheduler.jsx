@@ -143,6 +143,7 @@ const CSS = `
 /* ------------------------------------------------------------------ */
 const WD = ["日", "月", "火", "水", "木", "金", "土"];
 const uid = () => Math.random().toString(36).slice(2, 10);
+const MAX_CANDIDATES = 20;
 const dObj = (s) => new Date(s + "T00:00:00");
 const fmtMD = (s) => { const d = dObj(s); return `${d.getMonth() + 1}/${d.getDate()}`; };
 const fmtFull = (s) => { const d = dObj(s); return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日(${WD[d.getDay()]})`; };
@@ -189,6 +190,7 @@ function absorbProposals(mm, items) {
   let responses = { ...mm.responses };
   let added = 0;
   byKey.forEach((g) => {
+    if (candidates.length >= MAX_CANDIDATES) return;
     if (candidates.some((c) => c.date === g.date && c.start === g.start && c.end === g.end)) return;
     const id = uid();
     candidates.push({ id, date: g.date, start: g.start, end: g.end });
@@ -200,6 +202,44 @@ function absorbProposals(mm, items) {
     });
   });
   return { next: { ...mm, candidates: candidates.sort(sortCands), responses }, added };
+}
+
+/** 候補日時を外す（提案リストからの取り消し用） */
+function removeCandidateSlot(mm, slot) {
+  const start = snap30(slot.start);
+  const end = snap30(slot.end || addMin(start, 60));
+  const target = slot.id
+    ? mm.candidates.find((c) => c.id === slot.id)
+    : mm.candidates.find((c) => c.date === slot.date && c.start === start && c.end === end);
+  if (!target) return mm;
+  const responses = { ...mm.responses };
+  Object.keys(responses).forEach((name) => {
+    const prev = responses[name];
+    if (!prev?.answers?.[target.id]) return;
+    const answers = { ...prev.answers };
+    delete answers[target.id];
+    responses[name] = { ...prev, answers };
+  });
+  return {
+    ...mm,
+    candidates: mm.candidates.filter((c) => c.id !== target.id),
+    responses,
+    decided: mm.decided?.candidateId === target.id ? null : mm.decided,
+  };
+}
+
+function addCandidateSlots(mm, slots) {
+  let candidates = [...mm.candidates];
+  let added = 0;
+  for (const s of slots) {
+    if (candidates.length >= MAX_CANDIDATES) break;
+    const start = snap30(s.start);
+    const end = snap30(s.end || addMin(start, 60));
+    if (candidates.some((c) => c.date === s.date && c.start === start && c.end === end)) continue;
+    candidates.push({ id: uid(), date: s.date, start, end });
+    added++;
+  }
+  return { next: { ...mm, candidates: candidates.sort(sortCands) }, added };
 }
 
 const ME_LOCAL = ME_KEY;
@@ -737,10 +777,15 @@ function NewMeeting({ onCancel, onCreate, onOpenMeeting, pastNames, allMeetings,
   };
   const genCands = () => {
     if (!dates.length || !slot) { setErr("日付と開始時刻をどちらも選んでください。"); return; }
+    if (cands.length >= MAX_CANDIDATES) { setErr(`候補は最大${MAX_CANDIDATES}件までです。`); return; }
     const made = [];
     dates.forEach((d) => {
-      if (!cands.some((c) => c.date === d && c.start === slot)) made.push({ id: uid(), date: d, start: slot, end: addMin(slot, dur) });
+      if (cands.length + made.length >= MAX_CANDIDATES) return;
+      if (!cands.some((c) => c.date === d && c.start === slot) && !made.some((c) => c.date === d && c.start === slot)) {
+        made.push({ id: uid(), date: d, start: slot, end: addMin(slot, dur) });
+      }
     });
+    if (!made.length) { setErr(cands.length >= MAX_CANDIDATES ? `候補は最大${MAX_CANDIDATES}件までです。` : "新しい候補がありません。"); return; }
     setCands([...cands, ...made].sort(sortCands)); setErr(""); setDates([]);
   };
 
@@ -906,7 +951,7 @@ function NewMeeting({ onCancel, onCreate, onOpenMeeting, pastNames, allMeetings,
         {cands.length > 0 && (
           <div className="mt-5 pt-4 divide">
             <div className="flex items-center justify-between mb-2">
-              <span className="fld" style={{ margin: 0 }}>候補一覧（{cands.length}件）</span>
+              <span className="fld" style={{ margin: 0 }}>候補一覧（{cands.length}/{MAX_CANDIDATES}件）</span>
               <button className="btn btn-quiet btn-sm" onClick={() => setCands([])}>すべて消す</button>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -1032,6 +1077,9 @@ function Respond({ m, who, setWho, canCoord, mutate, say }) {
   const existing = m.responses?.[who];
   const [answers, setAnswers] = useState({});
   const [props, setProps] = useState([]);
+  const [addDate, setAddDate] = useState(todayISO());
+  const [addStart, setAddStart] = useState("10:00");
+  const [addEnd, setAddEnd] = useState("11:00");
 
   useEffect(() => {
     setAnswers(existing?.answers || {});
@@ -1048,8 +1096,33 @@ function Respond({ m, who, setWho, canCoord, mutate, say }) {
 
   const allNg = cands.length > 0 && cands.every((c) => answers[c.id] === "ng");
   const done = cands.filter((c) => answers[c.id]).length;
+  const manageCands = canCoord && isCoordinatorName(m, who);
 
   const setAnswer = (cid, v) => setAnswers((a) => ({ ...a, [cid]: v }));
+
+  const removeCand = async (c) => {
+    if (!manageCands) return;
+    if (!window.confirm(`${fmtMD(c.date)}(${dow(c.date)}) ${c.start}–${c.end} を候補から削除しますか？`)) return;
+    await mutate((mm) => removeCandidateSlot(mm, c), "候補を削除しました");
+    setAnswers((a) => {
+      const next = { ...a };
+      delete next[c.id];
+      return next;
+    });
+  };
+
+  const addCand = async () => {
+    if (!manageCands) return;
+    if (cands.length >= MAX_CANDIDATES) { say(`候補は最大${MAX_CANDIDATES}件までです`); return; }
+    const slot = { date: addDate, start: addStart, end: addEnd };
+    let added = 0;
+    await mutate((mm) => {
+      const r = addCandidateSlots(mm, [slot]);
+      added = r.added;
+      return r.added ? r.next : mm;
+    });
+    say(added ? "候補を追加しました" : "同じ候補がすでにあります");
+  };
 
   const trySetWho = (name) => {
     const n = (name || "").trim();
@@ -1146,6 +1219,7 @@ function Respond({ m, who, setWho, canCoord, mutate, say }) {
                           <span className="name-v">{name === who ? `${name}（あなた）` : name}</span>
                         </th>
                       ))}
+                      {manageCands && <th style={{ width: 44 }} aria-label="削除" />}
                     </tr>
                   </thead>
                   <tbody>
@@ -1172,17 +1246,45 @@ function Respond({ m, who, setWho, canCoord, mutate, say }) {
                           const cls = a === "ok" ? "m-ok" : a === "mb" ? "m-mb" : a === "ng" ? "m-ng" : "m-na";
                           return <td key={name}><span className={`mark ${cls}`}>{a === "ok" ? "○" : a === "mb" ? "△" : a === "ng" ? "×" : "–"}</span></td>;
                         })}
+                        {manageCands && (
+                          <td>
+                            <button
+                              type="button"
+                              className="btn btn-quiet btn-sm"
+                              style={{ padding: "6px 8px", color: "var(--ink3)" }}
+                              title="この候補を削除"
+                              aria-label="この候補を削除"
+                              onClick={() => removeCand(c)}
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </td>
+                        )}
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
             )}
+            {manageCands && (
+              <div className="mt-4 pt-3 divide">
+                <div className="text-xs muted mb-2">調整者：候補の追加・削除（最大{MAX_CANDIDATES}件・現在{cands.length}件）</div>
+                <div className="flex flex-wrap gap-2 items-end">
+                  <input type="date" value={addDate} min={todayISO()} onChange={(e) => setAddDate(e.target.value)} style={{ width: 160 }} />
+                  <TimeSelect value={addStart} onChange={(v) => { setAddStart(v); setAddEnd(addMin(v, 60)); }} />
+                  <span className="muted">–</span>
+                  <TimeSelect value={addEnd} onChange={setAddEnd} />
+                  <button className="btn btn-ghost btn-sm" disabled={cands.length >= MAX_CANDIDATES} onClick={addCand}>
+                    <Plus size={13} />候補を追加
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="card p-4">
             <div className="eyebrow mb-2">STEP3：候補日時すべてNGの場合、調整可能な日時候補をご共有ください</div>
-            <p className="text-xs muted mb-3">任意・3件まで。時刻は30分単位です。{allNg ? " すべての候補が不可になっています。" : ""}</p>
+            <p className="text-xs muted mb-3">任意・{MAX_CANDIDATES}件まで。時刻は30分単位です。{allNg ? " すべての候補が不可になっています。" : ""}</p>
             <div className="grid gap-2">
               {props.map((p, i) => (
                 <div key={i} className="flex flex-wrap gap-2 items-center">
@@ -1193,7 +1295,7 @@ function Respond({ m, who, setWho, canCoord, mutate, say }) {
                   <button className="btn btn-quiet btn-sm" onClick={() => setProps(props.filter((_, j) => j !== i))}><X size={13} /></button>
                 </div>
               ))}
-              {props.length < 3 && (
+              {props.length < MAX_CANDIDATES && (
                 <button className="btn btn-ghost btn-sm" style={{ alignSelf: "flex-start" }}
                   onClick={() => setProps([...props, { date: "", start: "10:00", end: "11:00" }])}><Plus size={13} />調整可能な日時を足す</button>
               )}
@@ -1347,7 +1449,7 @@ function Result({ m, mutate, say, others }) {
             </button>
           )}
         </div>
-        <p className="text-xs muted mb-3">候補に載せると集計表に行が増えます。提案者には自動で ○ が入ります。</p>
+        <p className="text-xs muted mb-3">候補に載せると集計表に行が増えます。提案者には自動で ○ が入ります。追加後は「候補から外す」で取り消せます。</p>
         {proposals.length === 0 ? (
           <div className="text-sm muted">まだ提案はありません。</div>
         ) : (
@@ -1357,10 +1459,22 @@ function Result({ m, mutate, say, others }) {
               return (
                 <div key={i} className="flex flex-wrap items-center gap-2 justify-between py-1.5" style={{ borderTop: i ? "1px solid var(--line2)" : "none" }}>
                   <span className="mono text-sm">{fmtMD(p.date)}({dow(p.date)}) {p.start}–{p.end} <span className="muted" style={{ fontFamily: "'Noto Sans JP',sans-serif" }}>／ {p.by} さん</span></span>
-                  <button className="btn btn-ghost btn-sm" disabled={dup}
-                    onClick={() => mutate((mm) => absorbProposals(mm, [p]).next, "候補に追加しました")}>
-                    {dup ? "追加済み" : <><Plus size={13} />候補に追加</>}
-                  </button>
+                  {dup ? (
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      style={{ color: "var(--ng)" }}
+                      onClick={() => mutate((mm) => removeCandidateSlot(mm, p), "候補から外しました")}
+                    >
+                      <Trash2 size={13} />候補から外す
+                    </button>
+                  ) : (
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => mutate((mm) => absorbProposals(mm, [p]).next, "候補に追加しました")}
+                    >
+                      <Plus size={13} />候補に追加
+                    </button>
+                  )}
                 </div>
               );
             })}
@@ -1512,7 +1626,7 @@ function Setting({ m, mutate, onDelete, onCopy, say }) {
       </div>
 
       <div className="card p-5">
-        <div className="eyebrow mb-3">候補日時</div>
+        <div className="eyebrow mb-3">候補日時（{m.candidates.length}/{MAX_CANDIDATES}）</div>
         <div className="grid gap-1.5 mb-4">
           {[...m.candidates].sort(sortCands).map((c) => (
             <div key={c.id} className="flex items-center justify-between gap-2 py-1.5" style={{ borderBottom: "1px solid var(--line2)" }}>
@@ -1530,8 +1644,14 @@ function Setting({ m, mutate, onDelete, onCopy, say }) {
           <TimeSelect value={ns} onChange={(v) => { setNs(v); setNe(addMin(v, 60)); }} />
           <span className="muted">–</span>
           <TimeSelect value={ne} onChange={setNe} />
-          <button className="btn btn-ghost" onClick={() => mutate((mm) => ({ ...mm, candidates: [...mm.candidates, { id: uid(), date: nd, start: snap30(ns), end: snap30(ne) }].sort(sortCands) }), "候補を追加しました")}>
-            <Plus size={15} />候補を追加
+          <button className="btn btn-ghost" disabled={m.candidates.length >= MAX_CANDIDATES} onClick={() => {
+            if (m.candidates.length >= MAX_CANDIDATES) { say?.(`候補は最大${MAX_CANDIDATES}件までです`); return; }
+            mutate((mm) => {
+              const { next, added } = addCandidateSlots(mm, [{ date: nd, start: ns, end: ne }]);
+              return added ? next : mm;
+            }, m.candidates.length >= MAX_CANDIDATES ? undefined : "候補を追加しました");
+          }}>
+            <Plus size={15} />候補を追加{m.candidates.length >= MAX_CANDIDATES ? `（上限${MAX_CANDIDATES}）` : ""}
           </button>
         </div>
       </div>
