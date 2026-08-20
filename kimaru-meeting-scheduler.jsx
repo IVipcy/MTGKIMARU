@@ -144,6 +144,7 @@ const CSS = `
 const WD = ["日", "月", "火", "水", "木", "金", "土"];
 const uid = () => Math.random().toString(36).slice(2, 10);
 const MAX_CANDIDATES = 20;
+const MAX_PROPOSALS = 3;
 const dObj = (s) => new Date(s + "T00:00:00");
 const fmtMD = (s) => { const d = dObj(s); return `${d.getMonth() + 1}/${d.getDate()}`; };
 const fmtFull = (s) => { const d = dObj(s); return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日(${WD[d.getDay()]})`; };
@@ -1282,9 +1283,10 @@ function Respond({ m, who, setWho, canCoord, mutate, say }) {
             )}
           </div>
 
+          {!manageCands && (
           <div className="card p-4">
             <div className="eyebrow mb-2">STEP3：候補日時すべてNGの場合、調整可能な日時候補をご共有ください</div>
-            <p className="text-xs muted mb-3">任意・{MAX_CANDIDATES}件まで。時刻は30分単位です。{allNg ? " すべての候補が不可になっています。" : ""}</p>
+            <p className="text-xs muted mb-3">任意・{MAX_PROPOSALS}件まで。時刻は30分単位です。{allNg ? " すべての候補が不可になっています。" : ""}</p>
             <div className="grid gap-2">
               {props.map((p, i) => (
                 <div key={i} className="flex flex-wrap gap-2 items-center">
@@ -1295,12 +1297,13 @@ function Respond({ m, who, setWho, canCoord, mutate, say }) {
                   <button className="btn btn-quiet btn-sm" onClick={() => setProps(props.filter((_, j) => j !== i))}><X size={13} /></button>
                 </div>
               ))}
-              {props.length < MAX_CANDIDATES && (
+              {props.length < MAX_PROPOSALS && (
                 <button className="btn btn-ghost btn-sm" style={{ alignSelf: "flex-start" }}
                   onClick={() => setProps([...props, { date: "", start: "10:00", end: "11:00" }])}><Plus size={13} />調整可能な日時を足す</button>
               )}
             </div>
           </div>
+          )}
 
           <div className="flex gap-2">
             <button className="btn btn-primary" onClick={save}><Check size={15} />回答を保存する</button>
