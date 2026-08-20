@@ -144,7 +144,7 @@ const CSS = `
 const WD = ["日", "月", "火", "水", "木", "金", "土"];
 const uid = () => Math.random().toString(36).slice(2, 10);
 const MAX_CANDIDATES = 20;
-const MAX_PROPOSALS = 3;
+const MAX_PROPOSALS = 20;
 const dObj = (s) => new Date(s + "T00:00:00");
 const fmtMD = (s) => { const d = dObj(s); return `${d.getMonth() + 1}/${d.getDate()}`; };
 const fmtFull = (s) => { const d = dObj(s); return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日(${WD[d.getDay()]})`; };
